@@ -1,0 +1,48 @@
+name: Deploy Add-ons
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/addons/**'
+      - '.github/workflows/deploy-addons.yml'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    env:
+      KUBECONFIG_INLINE: ${{ secrets.KUBECONFIG }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare kubeconfig
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.kube"
+          cat > $HOME/.kube/config << 'EOF'
+          ${KUBECONFIG_INLINE}
+          EOF
+
+      - name: Ensure helm present
+        shell: bash
+        run: |
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+      - name: Helm repos
+        shell: bash
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy Add-ons
+        shell: bash
+        run: |
+          bash infra/addons/deploy.sh
+
+
