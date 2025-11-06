@@ -101,15 +101,43 @@ jobs:
           echo "Using GitHub Secret kubeconfig..."
           # Create .kube directory if it doesn't exist
           mkdir -p ~/.kube
-          # Decode and write kubeconfig to temp location first
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > /tmp/kubeconfig-admin
+          
+          # Try to decode base64, fallback to plain text
+          KUBECONFIG_CONTENT=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d 2>/dev/null || echo "${{ secrets.KUBECONFIG }}")
+          
+          # Check if decoded content is valid (contains apiVersion)
+          if echo "$KUBECONFIG_CONTENT" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
+            echo "✅ Using decoded kubeconfig"
+          else
+            # Try plain text
+            KUBECONFIG_CONTENT="${{ secrets.KUBECONFIG }}"
+            if echo "$KUBECONFIG_CONTENT" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
+              echo "✅ Using plain text kubeconfig"
+            else
+              echo "❌ Invalid kubeconfig format (neither base64 nor plain text valid)"
+              echo "First 3 lines (masked):"
+              echo "$KUBECONFIG_CONTENT" | head -n 3 | sed 's/./?/g'
+              exit 1
+            fi
+          fi
+          
+          # Write kubeconfig to temp location first
+          echo "$KUBECONFIG_CONTENT" > /tmp/kubeconfig-admin
           # Move to final location
           mv /tmp/kubeconfig-admin ~/.kube/config-admin
           # Set proper permissions
           chmod 600 ~/.kube/config-admin
           export KUBECONFIG=~/.kube/config-admin
           echo "KUBECONFIG set to: $KUBECONFIG"
+          
           # Verify kubeconfig
+          if ! kubectl config current-context >/dev/null 2>&1; then
+            echo "❌ Invalid kubeconfig - cannot get current context"
+            echo "File size: $(wc -c < ~/.kube/config-admin) bytes"
+            echo "First 5 lines:"
+            head -n 5 ~/.kube/config-admin | sed 's/./?/g' || head -n 5 ~/.kube/config-admin
+            exit 1
+          fi
           kubectl config current-context
           echo "✅ Admin kubeconfig ready"
 
