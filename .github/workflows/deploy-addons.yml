@@ -215,7 +215,7 @@ jobs:
             # ServiceAccounts
             - apiGroups: [""]
               resources: ["serviceaccounts"]
-              verbs: ["create", "update", "patch", "get", "list", "watch"]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
             # RBAC Ressourcen (für Helm und allgemeine Prüfungen)
             - apiGroups: ["rbac.authorization.k8s.io"]
               resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
