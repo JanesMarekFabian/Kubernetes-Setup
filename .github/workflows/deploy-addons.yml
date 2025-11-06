@@ -216,6 +216,10 @@ jobs:
             - apiGroups: [""]
               resources: ["serviceaccounts"]
               verbs: ["create", "update", "patch", "get", "list", "watch"]
+            # RBAC Ressourcen (für Helm und allgemeine Prüfungen)
+            - apiGroups: ["rbac.authorization.k8s.io"]
+              resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+              verbs: ["get", "list", "watch", "create", "update", "patch"]
             # Für Helm (falls verwendet)
             - apiGroups: ["helm.cattle.io"]
               resources: ["helmchartconfigs", "helmcharts"]
@@ -232,6 +236,14 @@ jobs:
             - apiGroups: ["storage.k8s.io"]
               resources: ["storageclasses"]
               verbs: ["get", "list", "watch", "patch"]
+            # Helm Releases und Secrets (für Helm 3)
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            # CustomResourceDefinitions (für Helm Charts mit CRDs)
+            - apiGroups: ["apiextensions.k8s.io"]
+              resources: ["customresourcedefinitions"]
+              verbs: ["get", "list", "watch", "create", "update", "patch"]
           ---
           apiVersion: rbac.authorization.k8s.io/v1
           kind: ClusterRoleBinding
