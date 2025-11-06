@@ -231,11 +231,19 @@ jobs:
             # Für Verifikation
             - apiGroups: [""]
               resources: ["nodes"]
-              verbs: ["get", "list"]
+              verbs: ["get", "list", "watch"]
             # Für Metrics Server
             - apiGroups: ["metrics.k8s.io"]
               resources: ["*"]
               verbs: ["get", "list"]
+            # Coordination (für Leases, z.B. Leader Election)
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["get", "list", "watch", "create", "update", "patch"]
+            # Discovery (für EndpointSlices)
+            - apiGroups: ["discovery.k8s.io"]
+              resources: ["endpointslices"]
+              verbs: ["get", "list", "watch"]
             # StorageClasses
             - apiGroups: ["storage.k8s.io"]
               resources: ["storageclasses"]
@@ -252,6 +260,10 @@ jobs:
             - apiGroups: ["networking.k8s.io"]
               resources: ["ingresses", "ingressclasses", "networkpolicies"]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            # Ingress Status (Subresource für Status-Updates)
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses/status"]
+              verbs: ["update"]
             # PersistentVolumes und PersistentVolumeClaims (für Storage)
             - apiGroups: [""]
               resources: ["persistentvolumes", "persistentvolumeclaims"]
