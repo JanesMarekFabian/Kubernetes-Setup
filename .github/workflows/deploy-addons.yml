@@ -9,83 +9,84 @@ on:
       - '.github/workflows/deploy-addons.yml'
 
 jobs:
-  # mirror-images:
-  #   name: Mirror Images to ACR
-  #   runs-on: ubuntu-latest
-  #   env:
-  #     ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-  #     ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-  #     ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-  #   steps:
-  #     - name: Login to ACR
-  #       uses: docker/login-action@v3
-  #       with:
-  #         registry: ${{ secrets.ACR_REGISTRY }}
-  #         username: ${{ secrets.ACR_USERNAME }}
-  #         password: ${{ secrets.ACR_PASSWORD }}
-  #
-  #     - name: Mirror NGINX Ingress Controller image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="registry.k8s.io/ingress-nginx/controller:v1.9.4"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Prometheus image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="quay.io/prometheus/prometheus:v2.48.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus:v2.48.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Grafana image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="docker.io/grafana/grafana:10.2.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/grafana/grafana:10.2.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Alertmanager image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="quay.io/prometheus/alertmanager:v0.26.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager:v0.26.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Metrics Server image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:v0.6.4"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server:v0.6.4"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Local Path Provisioner image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="rancher/local-path-provisioner:v0.0.26"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/rancher/local-path-provisioner:v0.0.26"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+  mirror-images:
+    name: Mirror Images to ACR
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror NGINX Ingress Controller image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/ingress-nginx/controller:v1.9.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/prometheus:v2.48.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus:v2.48.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Grafana image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="docker.io/grafana/grafana:10.2.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/grafana/grafana:10.2.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Alertmanager image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/alertmanager:v0.26.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager:v0.26.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Metrics Server image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:v0.6.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server:v0.6.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Local Path Provisioner image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="rancher/local-path-provisioner:v0.0.26"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/rancher/local-path-provisioner:v0.0.26"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
 
   deploy-infrastructure:
     name: Deploy Base Infrastructure
+    needs: mirror-images
     runs-on: self-hosted
     env:
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
@@ -455,6 +456,20 @@ jobs:
             -f infra/addons/values/ingress-nginx.yaml \
             --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --wait --timeout 5m
+
+      - name: Patch NGINX ServiceAccount with imagePullSecret
+        shell: bash
+        run: |
+          # Patch ingress-nginx ServiceAccount to use ACR imagePullSecret
+          kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "ServiceAccount might not exist yet, will retry..."
+          # Also patch default ServiceAccount (for admission webhook jobs)
+          kubectl patch serviceaccount default -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "Default ServiceAccount already patched"
+          # Restart pods to use new imagePullSecret
+          echo "Restarting NGINX pods to use ACR imagePullSecret..."
+          kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx || echo "Deployment might not exist yet"
+          kubectl wait --for=condition=available --timeout=5m deployment/ingress-nginx-controller -n ingress-nginx || echo "Waiting for deployment..."
 
       - name: Deploy Monitoring Stack (Prometheus + Grafana)
         shell: bash
