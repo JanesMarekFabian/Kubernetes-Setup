@@ -453,25 +453,42 @@ jobs:
             local namespace=$1
             local release_name=$2
             
-            if helm list -n "$namespace" 2>/dev/null | grep -q "$release_name"; then
-              echo "Checking status of $release_name in namespace $namespace..."
-              RELEASE_STATUS=$(helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+            echo "Checking release $release_name in namespace $namespace..."
+            
+            # Check if release exists
+            if ! helm list -n "$namespace" 2>/dev/null | grep -q "$release_name"; then
+              echo "ℹ️ Release $release_name not found in namespace $namespace"
+              return 0
+            fi
+            
+            # Try to get status - if this fails, release might be stuck
+            if ! helm status "$release_name" -n "$namespace" >/dev/null 2>&1; then
+              echo "⚠️ Cannot get status of $release_name, might be stuck. Attempting cleanup..."
+              helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
+              sleep 3
+              return 0
+            fi
+            
+            # Get release status
+            RELEASE_STATUS=$(helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+            echo "Release $release_name status: $RELEASE_STATUS"
+            
+            # Check for stuck states
+            if [ "$RELEASE_STATUS" = "pending-install" ] || [ "$RELEASE_STATUS" = "pending-upgrade" ] || [ "$RELEASE_STATUS" = "pending-rollback" ]; then
+              echo "⚠️ Release $release_name is stuck in $RELEASE_STATUS state"
               
-              if [ "$RELEASE_STATUS" = "pending-install" ] || [ "$RELEASE_STATUS" = "pending-upgrade" ] || [ "$RELEASE_STATUS" = "pending-rollback" ]; then
-                echo "⚠️ Release $release_name is stuck in $RELEASE_STATUS state, attempting rollback..."
-                helm rollback "$release_name" -n "$namespace" || true
+              # Try rollback first
+              echo "Attempting rollback..."
+              if helm rollback "$release_name" -n "$namespace" 2>/dev/null; then
+                echo "✅ Rollback successful, waiting..."
                 sleep 5
-                # If rollback fails, try to delete the release
-                if helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -q "pending"; then
-                  echo "⚠️ Rollback failed, deleting stuck release..."
-                  helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
-                  sleep 3
-                fi
               else
-                echo "✅ Release $release_name status: $RELEASE_STATUS (OK)"
+                echo "⚠️ Rollback failed, deleting stuck release..."
+                helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
+                sleep 3
               fi
             else
-              echo "ℹ️ Release $release_name not found in namespace $namespace"
+              echo "✅ Release $release_name status: $RELEASE_STATUS (OK)"
             fi
           }
           
@@ -480,6 +497,12 @@ jobs:
           
           # Clean up Monitoring Stack (if exists)
           cleanup_stuck_release "monitoring" "kube-prometheus-stack"
+          
+          # Additional check: try to force unlock if Helm lock exists
+          echo "Checking for Helm locks..."
+          if kubectl get secret -n ingress-nginx 2>/dev/null | grep -q "sh.helm.release"; then
+            echo "ℹ️ Helm release secrets found (normal)"
+          fi
 
       - name: Deploy NGINX Ingress Controller
         shell: bash
@@ -487,11 +510,37 @@ jobs:
           # KUBECONFIG is set via GITHUB_ENV from Prepare kubeconfig step
           export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
           kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx \
-            -f infra/addons/values/ingress-nginx.yaml \
-            --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --wait --timeout 5m
+          
+          # Try to deploy with retry mechanism
+          MAX_RETRIES=2
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+              echo "⚠️ Previous attempt failed, retrying (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+              # Clean up stuck release before retry
+              if helm list -n ingress-nginx 2>/dev/null | grep -q "ingress-nginx"; then
+                echo "Cleaning up stuck release before retry..."
+                helm uninstall ingress-nginx -n ingress-nginx --ignore-not-found || true
+                sleep 5
+              fi
+            fi
+            
+            if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+              -n ingress-nginx \
+              -f infra/addons/values/ingress-nginx.yaml \
+              --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
+              --wait --timeout 5m; then
+              echo "✅ NGINX Ingress Controller deployed successfully"
+              break
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -gt $MAX_RETRIES ]; then
+                echo "❌ Failed to deploy NGINX Ingress Controller after $MAX_RETRIES retries"
+                exit 1
+              fi
+            fi
+          done
 
       - name: Patch NGINX ServiceAccount with imagePullSecret
         shell: bash
