@@ -9,74 +9,85 @@ on:
       - '.github/workflows/deploy-addons.yml'
 
 jobs:
-  # mirror-images:
-  #   name: Mirror Images to ACR
-  #   runs-on: ubuntu-latest
-  #   env:
-  #     ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-  #     ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-  #     ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-  #   steps:
-  #     - name: Login to ACR
-  #       uses: docker/login-action@v3
-  #       with:
-  #         registry: ${{ secrets.ACR_REGISTRY }}
-  #         username: ${{ secrets.ACR_USERNAME }}
-  #         password: ${{ secrets.ACR_PASSWORD }}
-  #
-  #     - name: Mirror NGINX Ingress Controller image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="registry.k8s.io/ingress-nginx/controller:v1.9.4"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Prometheus image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="quay.io/prometheus/prometheus:v2.48.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus:v2.48.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Grafana image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="docker.io/grafana/grafana:10.2.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/grafana/grafana:10.2.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Alertmanager image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="quay.io/prometheus/alertmanager:v0.26.0"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager:v0.26.0"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
-  #
-  #     - name: Mirror Metrics Server image
-  #       shell: bash
-  #       run: |
-  #         SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:v0.6.4"
-  #         TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server:v0.6.4"
-  #         docker pull "$SOURCE_IMAGE"
-  #         docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
-  #         docker push "$TARGET_IMAGE"
-  #         echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+  mirror-images:
+    name: Mirror Images to ACR
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror NGINX Ingress Controller image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/ingress-nginx/controller:v1.9.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/prometheus:v2.48.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus:v2.48.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Grafana image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="docker.io/grafana/grafana:10.2.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/grafana/grafana:10.2.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Alertmanager image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/alertmanager:v0.26.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager:v0.26.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Metrics Server image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:v0.6.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server:v0.6.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Local Path Provisioner image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="rancher/local-path-provisioner:v0.0.26"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/rancher/local-path-provisioner:v0.0.26"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
 
   deploy-infrastructure:
     name: Deploy Base Infrastructure
     runs-on: self-hosted
+    needs: mirror-images
     env:
       KUBECONFIG_INLINE: ${{ secrets.KUBECONFIG }}
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
@@ -91,19 +102,27 @@ jobs:
         run: |
           mkdir -p "$HOME/.kube"
           # Write kubeconfig from secret (handles both plain text and base64)
-          # First try base64 decode, if it fails use as plain text
-          if echo "$KUBECONFIG_INLINE" | base64 -d > $HOME/.kube/config 2>/dev/null && [ -s $HOME/.kube/config ]; then
-            echo "✅ Decoded base64 kubeconfig"
+          # Try base64 decode first
+          DECODED=$(echo "$KUBECONFIG_INLINE" | base64 -d 2>/dev/null)
+          if [ $? -eq 0 ] && echo "$DECODED" | grep -q "apiVersion:" 2>/dev/null; then
+            echo "✅ Detected base64 encoded kubeconfig, decoding..."
+            echo "$DECODED" > $HOME/.kube/config
           else
             echo "✅ Using plain text kubeconfig"
-            echo "$KUBECONFIG_INLINE" > $HOME/.kube/config
+            # Use printf to preserve newlines properly
+            printf '%s\n' "$KUBECONFIG_INLINE" > $HOME/.kube/config
           fi
           chmod 600 "$HOME/.kube/config"
+          # Debug: Show first few lines to verify format
+          echo "First 5 lines of kubeconfig:"
+          head -n 5 $HOME/.kube/config
           # Verify it's valid YAML/JSON
           if ! kubectl config view --raw > /dev/null 2>&1; then
             echo "❌ Invalid kubeconfig format"
-            echo "First 200 chars of config:"
-            head -c 200 $HOME/.kube/config
+            echo "Full kubeconfig content (first 500 chars):"
+            head -c 500 $HOME/.kube/config
+            echo ""
+            echo "Kubeconfig file size: $(wc -c < $HOME/.kube/config) bytes"
             exit 1
           fi
           echo "✅ Kubeconfig is valid"
@@ -162,6 +181,17 @@ jobs:
           kubectl patch serviceaccount default -n kube-system \
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}'
 
+      - name: Create ACR imagePullSecret for local-path-storage namespace
+        shell: bash
+        run: |
+          kubectl get ns local-path-storage >/dev/null 2>&1 || kubectl create namespace local-path-storage
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${{ secrets.ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n local-path-storage \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Add Helm repositories
         shell: bash
         run: |
@@ -205,6 +235,28 @@ jobs:
             echo "Metrics Server already deployed"
           fi
 
+      - name: Deploy Local Path Provisioner
+        shell: bash
+        run: |
+          if ! kubectl -n local-path-storage get deploy local-path-provisioner >/dev/null 2>&1; then
+            # Download manifest and replace image URL with ACR
+            curl -sL https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml | \
+              sed "s|rancher/local-path-provisioner:v0.0.26|${{ secrets.ACR_REGISTRY }}/rancher/local-path-provisioner:v0.0.26|g" | \
+              kubectl apply -f -
+            # Patch ServiceAccount to use imagePullSecret (after it's created)
+            sleep 2
+            kubectl patch serviceaccount local-path-provisioner-service-account -n local-path-storage \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "ServiceAccount patched or not found yet"
+            kubectl wait --for=condition=available --timeout=5m deployment/local-path-provisioner -n local-path-storage
+            # Set as default storage class if not already set
+            kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || echo "StorageClass already configured"
+          else
+            echo "Local Path Provisioner already deployed"
+            # Ensure imagePullSecret is set even if already deployed
+            kubectl patch serviceaccount local-path-provisioner-service-account -n local-path-storage \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "ServiceAccount already patched"
+          fi
+
       - name: Verify deployments
         shell: bash
         run: |
@@ -217,6 +269,12 @@ jobs:
           echo "=== Metrics Server ==="
           kubectl get pods -n kube-system | grep metrics-server
           echo ""
+          echo "=== Local Path Provisioner ==="
+          kubectl get pods -n local-path-storage
+          echo ""
+          echo "=== Storage Classes ==="
+          kubectl get storageclass
+          echo ""
           echo "=== Cluster Status ==="
           kubectl top nodes || echo "Metrics not yet available (may take a few minutes)"
 
@@ -227,6 +285,7 @@ jobs:
           echo "  - NGINX Ingress Controller: ingress-nginx namespace"
           echo "  - Prometheus + Grafana: monitoring namespace"
           echo "  - Metrics Server: kube-system namespace"
+          echo "  - Local Path Provisioner: local-path-storage namespace"
           echo "  - All images pulled from ACR: ${{ secrets.ACR_REGISTRY }}"
 
 
