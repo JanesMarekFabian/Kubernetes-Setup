@@ -219,7 +219,7 @@ jobs:
             # RBAC Ressourcen (für Helm und allgemeine Prüfungen)
             - apiGroups: ["rbac.authorization.k8s.io"]
               resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
-              verbs: ["get", "list", "watch", "create", "update", "patch"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             # Für Helm (falls verwendet)
             - apiGroups: ["helm.cattle.io"]
               resources: ["helmchartconfigs", "helmcharts"]
