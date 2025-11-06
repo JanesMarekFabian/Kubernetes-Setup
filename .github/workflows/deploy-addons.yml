@@ -102,17 +102,34 @@ jobs:
           mkdir -p "$HOME/.kube"
           KUBECONFIG_PATH="$HOME/.kube/config"
           
+          # Check if secret is set
+          if [ -z "$KUBECONFIG_INLINE" ]; then
+            echo "❌ KUBECONFIG_INLINE is empty!"
+            exit 1
+          fi
+          
           # Write kubeconfig from GitHub Secret (handles both plain text and base64)
-          if echo "$KUBECONFIG_INLINE" | base64 -d > "$KUBECONFIG_PATH" 2>/dev/null && \
-             [ -s "$KUBECONFIG_PATH" ] && \
-             grep -q "apiVersion:" "$KUBECONFIG_PATH" 2>/dev/null; then
+          # Try base64 decode first
+          DECODED=$(echo -n "$KUBECONFIG_INLINE" | base64 -d 2>/dev/null)
+          if [ $? -eq 0 ] && [ -n "$DECODED" ] && echo "$DECODED" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
             echo "✅ Detected and decoded base64 kubeconfig"
+            cat > "$KUBECONFIG_PATH" <<EOF
+          $DECODED
+          EOF
           else
             echo "✅ Using plain text kubeconfig"
-            printf '%s\n' "$KUBECONFIG_INLINE" > "$KUBECONFIG_PATH"
+            # Use heredoc without quotes to allow variable expansion
+            cat > "$KUBECONFIG_PATH" <<EOF
+          $KUBECONFIG_INLINE
+          EOF
           fi
           
           chmod 600 "$KUBECONFIG_PATH"
+          
+          # Debug: Check what was written
+          echo "Kubeconfig file created, size: $(wc -c < "$KUBECONFIG_PATH") bytes"
+          echo "First 3 lines (checking format):"
+          head -n 3 "$KUBECONFIG_PATH" | sed 's/./?/g' || head -n 3 "$KUBECONFIG_PATH"
           
           # Set KUBECONFIG environment variable for all subsequent steps
           echo "KUBECONFIG=$KUBECONFIG_PATH" >> $GITHUB_ENV
@@ -122,8 +139,11 @@ jobs:
           if ! kubectl config view --raw > /dev/null 2>&1; then
             echo "❌ Invalid kubeconfig format"
             echo "File size: $(wc -c < "$KUBECONFIG_PATH") bytes"
-            echo "First 10 lines:"
-            head -n 10 "$KUBECONFIG_PATH"
+            echo "First character (hex): $(head -c 1 "$KUBECONFIG_PATH" | od -An -tx1)"
+            echo "Checking if file contains 'apiVersion':"
+            grep -c "apiVersion" "$KUBECONFIG_PATH" || echo "No 'apiVersion' found"
+            echo "First 15 lines (masked for security):"
+            head -n 15 "$KUBECONFIG_PATH" | sed 's/./?/g'
             exit 1
           fi
           echo "✅ Kubeconfig is valid (from GitHub Secret)"
