@@ -1,4 +1,4 @@
-name: Deploy Add-ons
+name: Deploy Cluster Infrastructure
 
 on:
   workflow_dispatch:
@@ -9,7 +9,8 @@ on:
       - '.github/workflows/deploy-addons.yml'
 
 jobs:
-  deploy:
+  deploy-infrastructure:
+    name: Deploy Base Infrastructure
     runs-on: self-hosted
     env:
       KUBECONFIG_INLINE: ${{ secrets.KUBECONFIG }}
@@ -24,6 +25,13 @@ jobs:
           cat > $HOME/.kube/config << 'EOF'
           ${KUBECONFIG_INLINE}
           EOF
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Verify cluster access
+        shell: bash
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
 
       - name: Ensure helm present
         shell: bash
@@ -31,8 +39,9 @@ jobs:
           if ! command -v helm >/dev/null 2>&1; then
             curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           fi
+          helm version
 
-      - name: Helm repos
+      - name: Add Helm repositories
         shell: bash
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -40,9 +49,55 @@ jobs:
           helm repo add grafana https://grafana.github.io/helm-charts
           helm repo update
 
-      - name: Deploy Add-ons
+      - name: Deploy NGINX Ingress Controller
         shell: bash
         run: |
-          bash infra/addons/deploy.sh
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ingress-nginx \
+            -f infra/addons/values/ingress-nginx.yaml \
+            --wait --timeout 5m
+
+      - name: Deploy Monitoring Stack (Prometheus + Grafana)
+        shell: bash
+        run: |
+          kubectl get ns monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            -n monitoring \
+            -f infra/addons/values/observability.yaml \
+            --wait --timeout 10m
+
+      - name: Deploy Metrics Server
+        shell: bash
+        run: |
+          if ! kubectl -n kube-system get deploy metrics-server >/dev/null 2>&1; then
+            kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+            kubectl wait --for=condition=available --timeout=5m deployment/metrics-server -n kube-system
+          else
+            echo "Metrics Server already deployed"
+          fi
+
+      - name: Verify deployments
+        shell: bash
+        run: |
+          echo "=== Ingress Controller ==="
+          kubectl get pods -n ingress-nginx
+          echo ""
+          echo "=== Monitoring Stack ==="
+          kubectl get pods -n monitoring
+          echo ""
+          echo "=== Metrics Server ==="
+          kubectl get pods -n kube-system | grep metrics-server
+          echo ""
+          echo "=== Cluster Status ==="
+          kubectl top nodes || echo "Metrics not yet available (may take a few minutes)"
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "✅ Cluster Infrastructure deployed successfully!"
+          echo "  - NGINX Ingress Controller: ingress-nginx namespace"
+          echo "  - Prometheus + Grafana: monitoring namespace"
+          echo "  - Metrics Server: kube-system namespace"
 
 
