@@ -103,42 +103,58 @@ jobs:
           
           SECRET_VALUE="${{ secrets.KUBECONFIG }}"
           
-          # Try base64 decode (might be double-encoded)
-          DECODED=$(printf '%s' "$SECRET_VALUE" | base64 -d 2>/dev/null)
-          DECODE_EXIT=$?
-          
-          if [ $DECODE_EXIT -eq 0 ] && [ -n "$DECODED" ]; then
-            # Check if decoded content is a valid kubeconfig
-            if printf '%s' "$DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
-              echo "✅ Detected base64-encoded kubeconfig"
-              KUBECONFIG_CONTENT="$DECODED"
-            else
-              # First decode succeeded but doesn't look like kubeconfig - try second decode
-              echo "⚠️ First decode succeeded but doesn't look like kubeconfig"
-              echo "   First 20 chars of decoded: $(printf '%s' "$DECODED" | head -c 20)"
-              echo "   Trying second decode..."
-              DOUBLE_DECODED=$(printf '%s' "$DECODED" | base64 -d 2>/dev/null)
-              DOUBLE_DECODE_EXIT=$?
-              
-              if [ $DOUBLE_DECODE_EXIT -eq 0 ] && [ -n "$DOUBLE_DECODED" ]; then
-                echo "   Second decode successful, checking if it's a kubeconfig..."
-                if printf '%s' "$DOUBLE_DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
-                  echo "✅ Detected double base64-encoded kubeconfig"
-                  KUBECONFIG_CONTENT="$DOUBLE_DECODED"
-                else
-                  echo "⚠️ Second decode succeeded but doesn't look like kubeconfig"
-                  echo "   First 20 chars: $(printf '%s' "$DOUBLE_DECODED" | head -c 20)"
-                  echo "   Trying plain text..."
-                  KUBECONFIG_CONTENT="$SECRET_VALUE"
-                fi
-              else
-                echo "⚠️ Second decode failed (exit code: $DOUBLE_DECODE_EXIT), trying plain text..."
-                KUBECONFIG_CONTENT="$SECRET_VALUE"
-              fi
-            fi
-          else
-            echo "✅ Using plain text kubeconfig (base64 decode failed)"
+          # First check if secret itself is already a valid kubeconfig (plain text)
+          if printf '%s' "$SECRET_VALUE" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
+            echo "✅ Secret is already a plain text kubeconfig"
             KUBECONFIG_CONTENT="$SECRET_VALUE"
+          else
+            # Try base64 decode (might be double-encoded)
+            DECODED=$(printf '%s' "$SECRET_VALUE" | base64 -d 2>/dev/null)
+            DECODE_EXIT=$?
+            
+            if [ $DECODE_EXIT -eq 0 ] && [ -n "$DECODED" ]; then
+              # Check if decoded content is a valid kubeconfig
+              if printf '%s' "$DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
+                echo "✅ Detected base64-encoded kubeconfig"
+                KUBECONFIG_CONTENT="$DECODED"
+              else
+                # First decode succeeded but doesn't look like kubeconfig
+                echo "⚠️ First decode succeeded but doesn't look like kubeconfig"
+                echo "   First 20 chars of decoded: $(printf '%s' "$DECODED" | head -c 20)"
+                
+                # Check if it looks like a certificate (might be part of kubeconfig)
+                if printf '%s' "$DECODED" | head -c 15 | grep -qE "^-----BEGIN"; then
+                  echo "   Decoded content looks like a certificate, not a kubeconfig"
+                  echo "   This suggests the secret might not be the full kubeconfig"
+                  echo "   Trying plain text (secret might be plain text kubeconfig)..."
+                  KUBECONFIG_CONTENT="$SECRET_VALUE"
+                else
+                  # Try second decode
+                  echo "   Trying second decode..."
+                  DOUBLE_DECODED=$(printf '%s' "$DECODED" | base64 -d 2>/dev/null)
+                  DOUBLE_DECODE_EXIT=$?
+                  
+                  if [ $DOUBLE_DECODE_EXIT -eq 0 ] && [ -n "$DOUBLE_DECODED" ]; then
+                    echo "   Second decode successful, checking if it's a kubeconfig..."
+                    if printf '%s' "$DOUBLE_DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
+                      echo "✅ Detected double base64-encoded kubeconfig"
+                      KUBECONFIG_CONTENT="$DOUBLE_DECODED"
+                    else
+                      echo "⚠️ Second decode succeeded but doesn't look like kubeconfig"
+                      echo "   First 20 chars: $(printf '%s' "$DOUBLE_DECODED" | head -c 20)"
+                      echo "   Trying plain text..."
+                      KUBECONFIG_CONTENT="$SECRET_VALUE"
+                    fi
+                  else
+                    echo "⚠️ Second decode failed (exit code: $DOUBLE_DECODE_EXIT), trying plain text..."
+                    KUBECONFIG_CONTENT="$SECRET_VALUE"
+                  fi
+                fi
+              fi
+            else
+              echo "✅ Using plain text kubeconfig (base64 decode failed)"
+              KUBECONFIG_CONTENT="$SECRET_VALUE"
+            fi
           fi
           
           # Write kubeconfig using printf to preserve content exactly
