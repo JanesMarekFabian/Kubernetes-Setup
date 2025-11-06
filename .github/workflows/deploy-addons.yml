@@ -445,6 +445,42 @@ jobs:
           helm repo add grafana https://grafana.github.io/helm-charts
           helm repo update
 
+      - name: Clean up stuck Helm releases
+        shell: bash
+        run: |
+          # Function to check and clean up stuck releases
+          cleanup_stuck_release() {
+            local namespace=$1
+            local release_name=$2
+            
+            if helm list -n "$namespace" 2>/dev/null | grep -q "$release_name"; then
+              echo "Checking status of $release_name in namespace $namespace..."
+              RELEASE_STATUS=$(helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+              
+              if [ "$RELEASE_STATUS" = "pending-install" ] || [ "$RELEASE_STATUS" = "pending-upgrade" ] || [ "$RELEASE_STATUS" = "pending-rollback" ]; then
+                echo "⚠️ Release $release_name is stuck in $RELEASE_STATUS state, attempting rollback..."
+                helm rollback "$release_name" -n "$namespace" || true
+                sleep 5
+                # If rollback fails, try to delete the release
+                if helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -q "pending"; then
+                  echo "⚠️ Rollback failed, deleting stuck release..."
+                  helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
+                  sleep 3
+                fi
+              else
+                echo "✅ Release $release_name status: $RELEASE_STATUS (OK)"
+              fi
+            else
+              echo "ℹ️ Release $release_name not found in namespace $namespace"
+            fi
+          }
+          
+          # Clean up NGINX Ingress Controller
+          cleanup_stuck_release "ingress-nginx" "ingress-nginx"
+          
+          # Clean up Monitoring Stack (if exists)
+          cleanup_stuck_release "monitoring" "kube-prometheus-stack"
+
       - name: Deploy NGINX Ingress Controller
         shell: bash
         run: |
