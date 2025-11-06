@@ -90,8 +90,23 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$HOME/.kube"
-          echo "$KUBECONFIG_INLINE" > $HOME/.kube/config
+          # Write kubeconfig from secret (handles both plain text and base64)
+          # First try base64 decode, if it fails use as plain text
+          if echo "$KUBECONFIG_INLINE" | base64 -d > $HOME/.kube/config 2>/dev/null && [ -s $HOME/.kube/config ]; then
+            echo "✅ Decoded base64 kubeconfig"
+          else
+            echo "✅ Using plain text kubeconfig"
+            echo "$KUBECONFIG_INLINE" > $HOME/.kube/config
+          fi
           chmod 600 "$HOME/.kube/config"
+          # Verify it's valid YAML/JSON
+          if ! kubectl config view --raw > /dev/null 2>&1; then
+            echo "❌ Invalid kubeconfig format"
+            echo "First 200 chars of config:"
+            head -c 200 $HOME/.kube/config
+            exit 1
+          fi
+          echo "✅ Kubeconfig is valid"
 
       - name: Verify cluster access
         shell: bash
