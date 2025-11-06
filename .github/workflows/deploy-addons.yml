@@ -102,44 +102,49 @@ jobs:
           # Create .kube directory if it doesn't exist
           mkdir -p ~/.kube
           
-          # Try to decode base64, fallback to plain text
-          KUBECONFIG_CONTENT=$(echo "${{ secrets.KUBECONFIG }}" | base64 -d 2>/dev/null || echo "${{ secrets.KUBECONFIG }}")
+          SECRET_VALUE="${{ secrets.KUBECONFIG }}"
           
-          # Check if decoded content is valid (contains apiVersion)
-          if echo "$KUBECONFIG_CONTENT" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
-            echo "✅ Using decoded kubeconfig"
-          else
-            # Try plain text
-            KUBECONFIG_CONTENT="${{ secrets.KUBECONFIG }}"
-            if echo "$KUBECONFIG_CONTENT" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
-              echo "✅ Using plain text kubeconfig"
+          # Try base64 decode first
+          DECODED=$(echo -n "$SECRET_VALUE" | base64 -d 2>/dev/null)
+          if [ $? -eq 0 ] && [ -n "$DECODED" ]; then
+            # Check if decoded content looks like a kubeconfig
+            if echo "$DECODED" | grep -q "^apiVersion:" 2>/dev/null || echo "$DECODED" | grep -q "kind: Config" 2>/dev/null; then
+              echo "✅ Detected base64-encoded kubeconfig"
+              KUBECONFIG_CONTENT="$DECODED"
             else
-              echo "❌ Invalid kubeconfig format (neither base64 nor plain text valid)"
-              echo "First 3 lines (masked):"
-              echo "$KUBECONFIG_CONTENT" | head -n 3 | sed 's/./?/g'
-              exit 1
+              echo "⚠️ Base64 decode succeeded but doesn't look like kubeconfig, trying plain text..."
+              KUBECONFIG_CONTENT="$SECRET_VALUE"
             fi
+          else
+            echo "✅ Using plain text kubeconfig"
+            KUBECONFIG_CONTENT="$SECRET_VALUE"
           fi
           
           # Write kubeconfig to temp location first
           echo "$KUBECONFIG_CONTENT" > /tmp/kubeconfig-admin
-          # Move to final location
-          mv /tmp/kubeconfig-admin ~/.kube/config-admin
-          # Set proper permissions
-          chmod 600 ~/.kube/config-admin
-          export KUBECONFIG=~/.kube/config-admin
-          echo "KUBECONFIG set to: $KUBECONFIG"
           
-          # Verify kubeconfig
-          if ! kubectl config current-context >/dev/null 2>&1; then
-            echo "❌ Invalid kubeconfig - cannot get current context"
-            echo "File size: $(wc -c < ~/.kube/config-admin) bytes"
-            echo "First 5 lines:"
-            head -n 5 ~/.kube/config-admin | sed 's/./?/g' || head -n 5 ~/.kube/config-admin
+          # Validate by trying to read it with kubectl
+          export KUBECONFIG=/tmp/kubeconfig-admin
+          if kubectl config view --raw >/dev/null 2>&1; then
+            echo "✅ Kubeconfig is valid"
+            # Move to final location
+            mv /tmp/kubeconfig-admin ~/.kube/config-admin
+            chmod 600 ~/.kube/config-admin
+            export KUBECONFIG=~/.kube/config-admin
+            echo "KUBECONFIG set to: $KUBECONFIG"
+            kubectl config current-context
+            echo "✅ Admin kubeconfig ready"
+          else
+            echo "❌ Invalid kubeconfig - kubectl cannot read it"
+            echo "File size: $(wc -c < /tmp/kubeconfig-admin) bytes"
+            echo "First 10 characters (hex): $(head -c 10 /tmp/kubeconfig-admin | od -An -tx1)"
+            echo "Checking for common patterns:"
+            grep -c "apiVersion" /tmp/kubeconfig-admin 2>/dev/null || echo "No 'apiVersion' found"
+            grep -c "kind" /tmp/kubeconfig-admin 2>/dev/null || echo "No 'kind' found"
+            echo "First 3 lines (first 50 chars each):"
+            head -n 3 /tmp/kubeconfig-admin | cut -c1-50 | sed 's/./?/g'
             exit 1
           fi
-          kubectl config current-context
-          echo "✅ Admin kubeconfig ready"
 
       - name: 🔧 Setup CI/CD ServiceAccount and kubeconfig
         shell: bash
