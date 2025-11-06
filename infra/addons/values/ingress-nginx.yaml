@@ -6,6 +6,6 @@ controller:
   image:
     repository: ingress-nginx/controller
     tag: "v1.9.4"
-    registry: ""  # Will be set via --set in workflow
+    # registry will be set via --set in workflow
 
 

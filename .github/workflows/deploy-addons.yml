@@ -556,15 +556,34 @@ jobs:
             fi
             
             # Deploy with explicit image registry and repository
-            echo "Deploying NGINX Ingress Controller with ACR image: ${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
+            ACR_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
+            echo "Deploying NGINX Ingress Controller with ACR image: $ACR_IMAGE"
+            
+            # Debug: Show what Helm will use
+            echo "Helm values being set:"
+            echo "  controller.image.registry: ${{ secrets.ACR_REGISTRY }}"
+            echo "  controller.image.repository: ingress-nginx/controller"
+            echo "  controller.image.tag: v1.9.4"
+            
             if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
               -n ingress-nginx \
               -f infra/addons/values/ingress-nginx.yaml \
               --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
               --set controller.image.repository="ingress-nginx/controller" \
               --set controller.image.tag="v1.9.4" \
+              --set controller.image.digest="" \
               --wait --timeout 5m; then
               echo "✅ NGINX Ingress Controller deployed successfully"
+              
+              # Debug: Check what image is actually used
+              echo "Checking deployed image..."
+              DEPLOYED_IMAGE=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "Could not get image")
+              echo "Deployed image: $DEPLOYED_IMAGE"
+              if echo "$DEPLOYED_IMAGE" | grep -q "${{ secrets.ACR_REGISTRY }}"; then
+                echo "✅ Image is correctly set to use ACR"
+              else
+                echo "⚠️ Warning: Image does not appear to use ACR registry!"
+              fi
               break
             else
               RETRY_COUNT=$((RETRY_COUNT + 1))
