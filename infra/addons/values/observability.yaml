@@ -4,12 +4,24 @@ grafana:
     type: ClusterIP
   ingress:
     enabled: false
+  image:
+    repository: grafana/grafana
+    tag: "10.2.0"
+    registry: ""  # Will be set via --set in workflow
 
 prometheus:
   prometheusSpec:
     retention: 7d
+    image:
+      repository: prometheus/prometheus
+      tag: "v2.48.0"
+      registry: ""  # Will be set via --set in workflow
 
 alertmanager:
   enabled: true
+  image:
+    repository: prometheus/alertmanager
+    tag: "v0.26.0"
+    registry: ""  # Will be set via --set in workflow
 
 

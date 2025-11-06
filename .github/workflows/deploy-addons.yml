@@ -9,11 +9,80 @@ on:
       - '.github/workflows/deploy-addons.yml'
 
 jobs:
+  mirror-images:
+    name: Mirror Images to ACR
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror NGINX Ingress Controller image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/ingress-nginx/controller:v1.9.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/prometheus:v2.48.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus:v2.48.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Grafana image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="docker.io/grafana/grafana:10.2.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/grafana/grafana:10.2.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Alertmanager image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/alertmanager:v0.26.0"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager:v0.26.0"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Metrics Server image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:v0.6.4"
+          TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server:v0.6.4"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
   deploy-infrastructure:
     name: Deploy Base Infrastructure
     runs-on: self-hosted
+    needs: mirror-images
     env:
       KUBECONFIG_INLINE: ${{ secrets.KUBECONFIG }}
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,13 +102,53 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-      - name: Ensure helm present
+      - name: Check helm installation
         shell: bash
         run: |
           if ! command -v helm >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            echo "❌ Helm is not installed. Please install it on the runner server:"
+            echo "   curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+            exit 1
           fi
           helm version
+
+      - name: Create ACR imagePullSecret for ingress-nginx namespace
+        shell: bash
+        run: |
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${{ secrets.ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n ingress-nginx \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}'
+
+      - name: Create ACR imagePullSecret for monitoring namespace
+        shell: bash
+        run: |
+          kubectl get ns monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${{ secrets.ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n monitoring \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n monitoring \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}'
+
+      - name: Create ACR imagePullSecret for kube-system namespace
+        shell: bash
+        run: |
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${{ secrets.ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n kube-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}'
 
       - name: Add Helm repositories
         shell: bash
@@ -56,6 +165,7 @@ jobs:
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             -n ingress-nginx \
             -f infra/addons/values/ingress-nginx.yaml \
+            --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --wait --timeout 5m
 
       - name: Deploy Monitoring Stack (Prometheus + Grafana)
@@ -65,13 +175,19 @@ jobs:
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.yaml \
+            --set grafana.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheus.prometheusSpec.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set alertmanager.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --wait --timeout 10m
 
       - name: Deploy Metrics Server
         shell: bash
         run: |
           if ! kubectl -n kube-system get deploy metrics-server >/dev/null 2>&1; then
-            kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+            # Download manifest and replace image URL with ACR
+            curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | \
+              sed "s|registry.k8s.io/metrics-server/metrics-server|${{ secrets.ACR_REGISTRY }}/metrics-server/metrics-server|g" | \
+              kubectl apply -f -
             kubectl wait --for=condition=available --timeout=5m deployment/metrics-server -n kube-system
           else
             echo "Metrics Server already deployed"
@@ -99,5 +215,6 @@ jobs:
           echo "  - NGINX Ingress Controller: ingress-nginx namespace"
           echo "  - Prometheus + Grafana: monitoring namespace"
           echo "  - Metrics Server: kube-system namespace"
+          echo "  - All images pulled from ACR: ${{ secrets.ACR_REGISTRY }}"
 
 
