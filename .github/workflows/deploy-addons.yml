@@ -209,6 +209,10 @@ jobs:
             - apiGroups: ["apps"]
               resources: ["deployments", "daemonsets", "statefulsets"]
               verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
+            # Jobs (für Helm Hooks)
+            - apiGroups: ["batch"]
+              resources: ["jobs"]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
             - apiGroups: [""]
               resources: ["services", "configmaps", "secrets", "pods", "endpoints"]
               verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
