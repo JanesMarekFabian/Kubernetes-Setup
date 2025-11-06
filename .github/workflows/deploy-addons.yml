@@ -276,7 +276,19 @@ jobs:
           
           # Generate CI/CD kubeconfig
           echo "Generating CI/CD kubeconfig..."
-          cat > ~/.kube/config <<EOF
+          
+          # Ensure .kube directory exists with correct permissions
+          mkdir -p ~/.kube
+          chmod 700 ~/.kube
+          
+          # Remove old config if it exists and has wrong permissions
+          if [ -f ~/.kube/config ] && [ ! -w ~/.kube/config ]; then
+            echo "⚠️ Removing old config file with wrong permissions..."
+            rm -f ~/.kube/config
+          fi
+          
+          # Write kubeconfig to temp file first, then move it
+          cat > /tmp/kubeconfig-cicd <<EOF
           apiVersion: v1
           kind: Config
           clusters:
@@ -297,6 +309,8 @@ jobs:
               token: $TOKEN
           EOF
           
+          # Move to final location and set permissions
+          mv /tmp/kubeconfig-cicd ~/.kube/config
           chmod 600 ~/.kube/config
           
           # Verify new kubeconfig
