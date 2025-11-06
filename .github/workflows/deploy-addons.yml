@@ -114,15 +114,25 @@ jobs:
               KUBECONFIG_CONTENT="$DECODED"
             else
               # First decode succeeded but doesn't look like kubeconfig - try second decode
-              echo "⚠️ First decode succeeded but doesn't look like kubeconfig, trying second decode..."
+              echo "⚠️ First decode succeeded but doesn't look like kubeconfig"
+              echo "   First 20 chars of decoded: $(printf '%s' "$DECODED" | head -c 20)"
+              echo "   Trying second decode..."
               DOUBLE_DECODED=$(printf '%s' "$DECODED" | base64 -d 2>/dev/null)
-              if [ $? -eq 0 ] && [ -n "$DOUBLE_DECODED" ] && \
-                 printf '%s' "$DOUBLE_DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
-                echo "✅ Detected double base64-encoded kubeconfig"
-                KUBECONFIG_CONTENT="$DOUBLE_DECODED"
+              DOUBLE_DECODE_EXIT=$?
+              
+              if [ $DOUBLE_DECODE_EXIT -eq 0 ] && [ -n "$DOUBLE_DECODED" ]; then
+                echo "   Second decode successful, checking if it's a kubeconfig..."
+                if printf '%s' "$DOUBLE_DECODED" | head -n 1 | grep -qE "^(apiVersion|kind):" 2>/dev/null; then
+                  echo "✅ Detected double base64-encoded kubeconfig"
+                  KUBECONFIG_CONTENT="$DOUBLE_DECODED"
+                else
+                  echo "⚠️ Second decode succeeded but doesn't look like kubeconfig"
+                  echo "   First 20 chars: $(printf '%s' "$DOUBLE_DECODED" | head -c 20)"
+                  echo "   Trying plain text..."
+                  KUBECONFIG_CONTENT="$SECRET_VALUE"
+                fi
               else
-                # Second decode failed or invalid - try plain text
-                echo "⚠️ Second decode failed or invalid, trying plain text..."
+                echo "⚠️ Second decode failed (exit code: $DOUBLE_DECODE_EXIT), trying plain text..."
                 KUBECONFIG_CONTENT="$SECRET_VALUE"
               fi
             fi
@@ -149,6 +159,7 @@ jobs:
             echo "File size: $(wc -c < /tmp/kubeconfig-admin) bytes"
             echo "First 10 characters (hex): $(head -c 10 /tmp/kubeconfig-admin | od -An -tx1)"
             echo "First 10 characters (ASCII): $(head -c 10 /tmp/kubeconfig-admin | tr -d '\0' | cat -A)"
+            echo "First 50 characters: $(head -c 50 /tmp/kubeconfig-admin)"
             echo "Checking for common patterns:"
             grep -c "apiVersion" /tmp/kubeconfig-admin 2>/dev/null || echo "No 'apiVersion' found"
             grep -c "kind" /tmp/kubeconfig-admin 2>/dev/null || echo "No 'kind' found"
