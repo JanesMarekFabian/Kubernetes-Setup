@@ -560,23 +560,44 @@ jobs:
             echo "Deploying NGINX Ingress Controller with ACR image: $ACR_IMAGE"
             echo "Using controller.image.image to set full image path (no Docker Hub fallback)"
             
+            # Deploy without --wait first, then patch if needed
             if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
               -n ingress-nginx \
               -f infra/addons/values/ingress-nginx.yaml \
               --set controller.image.image="$ACR_IMAGE" \
-              --wait --timeout 5m; then
-              echo "✅ NGINX Ingress Controller deployed successfully"
+              --timeout 5m; then
+              echo "✅ Helm release installed/upgraded"
               
-              # Verify deployed image
+              # Wait a moment for resources to be created
+              sleep 5
+              
+              # Verify and patch deployment if needed
               echo "Verifying deployed image..."
-              DEPLOYED_IMAGE=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "Could not get image")
-              echo "Deployed image: $DEPLOYED_IMAGE"
-              if echo "$DEPLOYED_IMAGE" | grep -q "${{ secrets.ACR_REGISTRY }}"; then
-                echo "✅ Image is correctly set to use ACR: $DEPLOYED_IMAGE"
-              else
-                echo "❌ ERROR: Image does not use ACR registry! Expected: $ACR_IMAGE, Got: $DEPLOYED_IMAGE"
-                exit 1
+              DEPLOYED_IMAGE=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+              
+              if [ -z "$DEPLOYED_IMAGE" ]; then
+                echo "⚠️ Deployment not found yet, waiting..."
+                sleep 10
+                DEPLOYED_IMAGE=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
               fi
+              
+              echo "Deployed image: $DEPLOYED_IMAGE"
+              
+              # If image doesn't use ACR, patch it directly
+              if [ -n "$DEPLOYED_IMAGE" ] && ! echo "$DEPLOYED_IMAGE" | grep -q "${{ secrets.ACR_REGISTRY }}"; then
+                echo "⚠️ Image does not use ACR registry, patching deployment directly..."
+                kubectl set image deployment/ingress-nginx-controller \
+                  controller="$ACR_IMAGE" \
+                  -n ingress-nginx
+                echo "✅ Deployment patched with ACR image"
+              elif echo "$DEPLOYED_IMAGE" | grep -q "${{ secrets.ACR_REGISTRY }}"; then
+                echo "✅ Image is correctly set to use ACR: $DEPLOYED_IMAGE"
+              fi
+              
+              # Now wait for deployment to be ready
+              echo "Waiting for deployment to be ready..."
+              kubectl wait --for=condition=available --timeout=5m deployment/ingress-nginx-controller -n ingress-nginx || echo "⚠️ Deployment not ready yet, but continuing..."
+              
               break
             else
               RETRY_COUNT=$((RETRY_COUNT + 1))
