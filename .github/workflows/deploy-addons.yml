@@ -244,6 +244,18 @@ jobs:
             - apiGroups: ["apiextensions.k8s.io"]
               resources: ["customresourcedefinitions"]
               verbs: ["get", "list", "watch", "create", "update", "patch"]
+            # Netzwerk-Ressourcen (für Ingress Controller, etc.)
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["ingresses", "ingressclasses", "networkpolicies"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            # PersistentVolumes und PersistentVolumeClaims (für Storage)
+            - apiGroups: [""]
+              resources: ["persistentvolumes", "persistentvolumeclaims"]
+              verbs: ["get", "list", "watch", "create", "update", "patch"]
+            # Events (für Debugging und Logging)
+            - apiGroups: [""]
+              resources: ["events"]
+              verbs: ["get", "list", "watch", "create", "patch"]
           ---
           apiVersion: rbac.authorization.k8s.io/v1
           kind: ClusterRoleBinding
