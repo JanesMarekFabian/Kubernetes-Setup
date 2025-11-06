@@ -466,16 +466,15 @@ jobs:
               echo "⚠️ Cannot get status of $release_name, might be stuck. Attempting cleanup..."
               helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
               sleep 3
-              return 0
             fi
             
             # Get release status
             RELEASE_STATUS=$(helm status "$release_name" -n "$namespace" -o json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
             echo "Release $release_name status: $RELEASE_STATUS"
             
-            # Check for stuck states
-            if [ "$RELEASE_STATUS" = "pending-install" ] || [ "$RELEASE_STATUS" = "pending-upgrade" ] || [ "$RELEASE_STATUS" = "pending-rollback" ]; then
-              echo "⚠️ Release $release_name is stuck in $RELEASE_STATUS state"
+            # Check for stuck states or if status check failed
+            if [ "$RELEASE_STATUS" = "pending-install" ] || [ "$RELEASE_STATUS" = "pending-upgrade" ] || [ "$RELEASE_STATUS" = "pending-rollback" ] || [ "$RELEASE_STATUS" = "unknown" ]; then
+              echo "⚠️ Release $release_name is stuck or in problematic state: $RELEASE_STATUS"
               
               # Try rollback first
               echo "Attempting rollback..."
@@ -483,9 +482,17 @@ jobs:
                 echo "✅ Rollback successful, waiting..."
                 sleep 5
               else
-                echo "⚠️ Rollback failed, deleting stuck release..."
+                echo "⚠️ Rollback failed, attempting force cleanup..."
+                
+                # Force uninstall
                 helm uninstall "$release_name" -n "$namespace" --ignore-not-found || true
                 sleep 3
+                
+                # Delete Helm release secrets (this removes the lock)
+                echo "Deleting Helm release secrets to remove lock..."
+                kubectl delete secret -n "$namespace" -l "owner=helm,name=$release_name" --ignore-not-found || true
+                kubectl get secret -n "$namespace" 2>/dev/null | grep "sh.helm.release.v1.$release_name" | awk '{print $1}' | xargs -r kubectl delete secret -n "$namespace" --ignore-not-found || true
+                sleep 2
               fi
             else
               echo "✅ Release $release_name status: $RELEASE_STATUS (OK)"
@@ -518,12 +525,16 @@ jobs:
           while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
             if [ $RETRY_COUNT -gt 0 ]; then
               echo "⚠️ Previous attempt failed, retrying (attempt $RETRY_COUNT/$MAX_RETRIES)..."
-              # Clean up stuck release before retry
-              if helm list -n ingress-nginx 2>/dev/null | grep -q "ingress-nginx"; then
-                echo "Cleaning up stuck release before retry..."
-                helm uninstall ingress-nginx -n ingress-nginx --ignore-not-found || true
-                sleep 5
-              fi
+              # Force clean up stuck release before retry
+              echo "Force cleaning up stuck release before retry..."
+              helm uninstall ingress-nginx -n ingress-nginx --ignore-not-found || true
+              sleep 3
+              
+              # Delete Helm release secrets to remove lock
+              echo "Deleting Helm release secrets to remove lock..."
+              kubectl delete secret -n ingress-nginx -l "owner=helm,name=ingress-nginx" --ignore-not-found || true
+              kubectl get secret -n ingress-nginx 2>/dev/null | grep "sh.helm.release.v1.ingress-nginx" | awk '{print $1}' | xargs -r kubectl delete secret -n ingress-nginx --ignore-not-found || true
+              sleep 3
             fi
             
             if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
