@@ -88,7 +88,6 @@ jobs:
     name: Deploy Base Infrastructure
     runs-on: self-hosted
     env:
-      KUBECONFIG_INLINE: ${{ secrets.KUBECONFIG }}
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
@@ -96,71 +95,160 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare kubeconfig
+      - name: 🔐 Setup Admin kubeconfig
         shell: bash
         run: |
-          mkdir -p "$HOME/.kube"
-          KUBECONFIG_PATH="$HOME/.kube/config"
+          echo "Using GitHub Secret kubeconfig..."
+          # Create .kube directory if it doesn't exist
+          mkdir -p ~/.kube
+          # Decode and write kubeconfig to temp location first
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > /tmp/kubeconfig-admin
+          # Move to final location
+          mv /tmp/kubeconfig-admin ~/.kube/config-admin
+          # Set proper permissions
+          chmod 600 ~/.kube/config-admin
+          export KUBECONFIG=~/.kube/config-admin
+          echo "KUBECONFIG set to: $KUBECONFIG"
+          # Verify kubeconfig
+          kubectl config current-context
+          echo "✅ Admin kubeconfig ready"
+
+      - name: 🔧 Setup CI/CD ServiceAccount and kubeconfig
+        shell: bash
+        run: |
+          export KUBECONFIG=~/.kube/config-admin
           
-          # Check if secret is set
-          if [ -z "$KUBECONFIG_INLINE" ]; then
-            echo "❌ KUBECONFIG_INLINE is empty!"
-            exit 1
-          fi
-          
-          # Write kubeconfig from GitHub Secret (handles both plain text and base64)
-          # Try base64 decode first
-          DECODED=$(echo -n "$KUBECONFIG_INLINE" | base64 -d 2>/dev/null)
-          if [ $? -eq 0 ] && [ -n "$DECODED" ] && echo "$DECODED" | head -n 1 | grep -q "apiVersion:" 2>/dev/null; then
-            echo "✅ Detected and decoded base64 kubeconfig"
-            cat > "$KUBECONFIG_PATH" <<EOF
-          $DECODED
+          # Apply RBAC manifests
+          echo "Creating CI/CD ServiceAccount and RBAC..."
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: cicd-deploy
+            namespace: kube-system
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: cicd-deploy-role
+          rules:
+            # Namespaces verwalten
+            - apiGroups: [""]
+              resources: ["namespaces"]
+              verbs: ["create", "get", "list", "watch"]
+            # Deployments, Services, ConfigMaps, Secrets
+            - apiGroups: ["apps"]
+              resources: ["deployments", "daemonsets", "statefulsets"]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
+            - apiGroups: [""]
+              resources: ["services", "configmaps", "secrets", "pods", "endpoints"]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
+            # ServiceAccounts
+            - apiGroups: [""]
+              resources: ["serviceaccounts"]
+              verbs: ["create", "update", "patch", "get", "list", "watch"]
+            # Für Helm (falls verwendet)
+            - apiGroups: ["helm.cattle.io"]
+              resources: ["helmchartconfigs", "helmcharts"]
+              verbs: ["*"]
+            # Für Verifikation
+            - apiGroups: [""]
+              resources: ["nodes"]
+              verbs: ["get", "list"]
+            # Für Metrics Server
+            - apiGroups: ["metrics.k8s.io"]
+              resources: ["*"]
+              verbs: ["get", "list"]
+            # StorageClasses
+            - apiGroups: ["storage.k8s.io"]
+              resources: ["storageclasses"]
+              verbs: ["get", "list", "watch", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: cicd-deploy-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cicd-deploy-role
+          subjects:
+            - kind: ServiceAccount
+              name: cicd-deploy
+              namespace: kube-system
           EOF
-          else
-            echo "✅ Using plain text kubeconfig"
-            # Use heredoc without quotes to allow variable expansion
-            cat > "$KUBECONFIG_PATH" <<EOF
-          $KUBECONFIG_INLINE
+          
+          # Wait for token secret to be created
+          echo "Waiting for ServiceAccount token..."
+          sleep 5
+          
+          # Get token secret name
+          SECRET_NAME=$(kubectl get serviceaccount cicd-deploy -n kube-system -o jsonpath='{.secrets[0].name}' || echo "")
+          if [ -z "$SECRET_NAME" ]; then
+            echo "⚠️ Token secret not found, creating manually..."
+            kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cicd-deploy-token
+            namespace: kube-system
+            annotations:
+              kubernetes.io/service-account.name: cicd-deploy
+          type: kubernetes.io/service-account-token
           EOF
+            sleep 3
+            SECRET_NAME="cicd-deploy-token"
           fi
           
-          chmod 600 "$KUBECONFIG_PATH"
+          # Get token and CA cert
+          TOKEN=$(kubectl get secret $SECRET_NAME -n kube-system -o jsonpath='{.data.token}' | base64 -d)
+          CA_CERT=$(kubectl get secret $SECRET_NAME -n kube-system -o jsonpath='{.data.ca\.crt}')
+          CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
           
-          # Debug: Check what was written
-          echo "Kubeconfig file created, size: $(wc -c < "$KUBECONFIG_PATH") bytes"
-          echo "First 3 lines (checking format):"
-          head -n 3 "$KUBECONFIG_PATH" | sed 's/./?/g' || head -n 3 "$KUBECONFIG_PATH"
+          # Generate CI/CD kubeconfig
+          echo "Generating CI/CD kubeconfig..."
+          cat > ~/.kube/config <<EOF
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - name: cluster
+            cluster:
+              server: $CLUSTER_ENDPOINT
+              certificate-authority-data: $CA_CERT
+          contexts:
+          - name: cicd-deploy
+            context:
+              cluster: cluster
+              user: cicd-deploy
+              namespace: kube-system
+          current-context: cicd-deploy
+          users:
+          - name: cicd-deploy
+            user:
+              token: $TOKEN
+          EOF
           
-          # Set KUBECONFIG environment variable for all subsequent steps
-          echo "KUBECONFIG=$KUBECONFIG_PATH" >> $GITHUB_ENV
+          chmod 600 ~/.kube/config
           
-          # Verify kubeconfig is valid
-          export KUBECONFIG="$KUBECONFIG_PATH"
-          if ! kubectl config view --raw > /dev/null 2>&1; then
-            echo "❌ Invalid kubeconfig format"
-            echo "File size: $(wc -c < "$KUBECONFIG_PATH") bytes"
-            echo "First character (hex): $(head -c 1 "$KUBECONFIG_PATH" | od -An -tx1)"
-            echo "Checking if file contains 'apiVersion':"
-            grep -c "apiVersion" "$KUBECONFIG_PATH" || echo "No 'apiVersion' found"
-            echo "First 15 lines (masked for security):"
-            head -n 15 "$KUBECONFIG_PATH" | sed 's/./?/g'
-            exit 1
-          fi
-          echo "✅ Kubeconfig is valid (from GitHub Secret)"
+          # Verify new kubeconfig
+          export KUBECONFIG=~/.kube/config
+          kubectl config current-context
+          kubectl get nodes
+          echo "✅ CI/CD kubeconfig created and verified"
+          
+          # Set KUBECONFIG for all subsequent steps
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
       - name: Verify cluster access
         shell: bash
         run: |
           # KUBECONFIG is set via GITHUB_ENV from previous step
           export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
-          if [ ! -f "$KUBECONFIG" ]; then
-            echo "❌ Kubeconfig file not found at $KUBECONFIG!"
-            exit 1
-          fi
-          # Test cluster access
+          # Test cluster access with CI/CD ServiceAccount
           kubectl cluster-info
           kubectl get nodes
-          echo "✅ Cluster access verified"
+          kubectl get namespaces
+          echo "✅ Cluster access verified with CI/CD ServiceAccount"
 
       - name: Check helm installation
         shell: bash
