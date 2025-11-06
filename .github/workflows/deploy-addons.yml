@@ -555,34 +555,27 @@ jobs:
               sleep 3
             fi
             
-            # Deploy with explicit image registry and repository
+            # Deploy with explicit full image path (no Docker Hub fallback)
             ACR_IMAGE="${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
             echo "Deploying NGINX Ingress Controller with ACR image: $ACR_IMAGE"
-            
-            # Debug: Show what Helm will use
-            echo "Helm values being set:"
-            echo "  controller.image.registry: ${{ secrets.ACR_REGISTRY }}"
-            echo "  controller.image.repository: ingress-nginx/controller"
-            echo "  controller.image.tag: v1.9.4"
+            echo "Using controller.image.image to set full image path (no Docker Hub fallback)"
             
             if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
               -n ingress-nginx \
               -f infra/addons/values/ingress-nginx.yaml \
-              --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
-              --set controller.image.repository="ingress-nginx/controller" \
-              --set controller.image.tag="v1.9.4" \
-              --set controller.image.digest="" \
+              --set controller.image.image="$ACR_IMAGE" \
               --wait --timeout 5m; then
               echo "✅ NGINX Ingress Controller deployed successfully"
               
-              # Debug: Check what image is actually used
-              echo "Checking deployed image..."
+              # Verify deployed image
+              echo "Verifying deployed image..."
               DEPLOYED_IMAGE=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "Could not get image")
               echo "Deployed image: $DEPLOYED_IMAGE"
               if echo "$DEPLOYED_IMAGE" | grep -q "${{ secrets.ACR_REGISTRY }}"; then
-                echo "✅ Image is correctly set to use ACR"
+                echo "✅ Image is correctly set to use ACR: $DEPLOYED_IMAGE"
               else
-                echo "⚠️ Warning: Image does not appear to use ACR registry!"
+                echo "❌ ERROR: Image does not use ACR registry! Expected: $ACR_IMAGE, Got: $DEPLOYED_IMAGE"
+                exit 1
               fi
               break
             else
