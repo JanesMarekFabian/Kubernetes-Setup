@@ -511,12 +511,30 @@ jobs:
             echo "ℹ️ Helm release secrets found (normal)"
           fi
 
-      - name: Deploy NGINX Ingress Controller
+      - name: Prepare NGINX namespace and ServiceAccount
         shell: bash
         run: |
           # KUBECONFIG is set via GITHUB_ENV from Prepare kubeconfig step
           export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
           kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          
+          # Ensure imagePullSecret exists
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${{ secrets.ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n ingress-nginx \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Patch default ServiceAccount before deployment (for admission webhook jobs)
+          kubectl patch serviceaccount default -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "Default ServiceAccount already patched"
+
+      - name: Deploy NGINX Ingress Controller
+        shell: bash
+        run: |
+          # KUBECONFIG is set via GITHUB_ENV from Prepare kubeconfig step
+          export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
           
           # Try to deploy with retry mechanism
           MAX_RETRIES=2
@@ -537,10 +555,14 @@ jobs:
               sleep 3
             fi
             
+            # Deploy with explicit image registry and repository
+            echo "Deploying NGINX Ingress Controller with ACR image: ${{ secrets.ACR_REGISTRY }}/ingress-nginx/controller:v1.9.4"
             if helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
               -n ingress-nginx \
               -f infra/addons/values/ingress-nginx.yaml \
               --set controller.image.registry="${{ secrets.ACR_REGISTRY }}" \
+              --set controller.image.repository="ingress-nginx/controller" \
+              --set controller.image.tag="v1.9.4" \
               --wait --timeout 5m; then
               echo "✅ NGINX Ingress Controller deployed successfully"
               break
@@ -556,12 +578,30 @@ jobs:
       - name: Patch NGINX ServiceAccount with imagePullSecret
         shell: bash
         run: |
+          # Wait for ServiceAccount to be created by Helm
+          echo "Waiting for ingress-nginx ServiceAccount to be created..."
+          for i in {1..30}; do
+            if kubectl get serviceaccount ingress-nginx -n ingress-nginx >/dev/null 2>&1; then
+              echo "✅ ServiceAccount found"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          
           # Patch ingress-nginx ServiceAccount to use ACR imagePullSecret
-          kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
-            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "ServiceAccount might not exist yet, will retry..."
-          # Also patch default ServiceAccount (for admission webhook jobs)
+          if kubectl get serviceaccount ingress-nginx -n ingress-nginx >/dev/null 2>&1; then
+            kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}'
+            echo "✅ Patched ingress-nginx ServiceAccount"
+          else
+            echo "⚠️ ServiceAccount ingress-nginx not found, skipping patch"
+          fi
+          
+          # Ensure default ServiceAccount is also patched (for admission webhook jobs)
           kubectl patch serviceaccount default -n ingress-nginx \
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || echo "Default ServiceAccount already patched"
+          
           # Restart pods to use new imagePullSecret
           echo "Restarting NGINX pods to use ACR imagePullSecret..."
           kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx || echo "Deployment might not exist yet"
