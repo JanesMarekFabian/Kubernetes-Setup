@@ -276,6 +276,7 @@ jobs:
                   "probes",
                   "thanosrulers",
                   "prometheusagents",
+                  "prometheusrules",
                 ]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             # PersistentVolumes und PersistentVolumeClaims (für Storage)
