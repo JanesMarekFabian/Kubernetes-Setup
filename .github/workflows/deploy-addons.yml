@@ -265,6 +265,19 @@ jobs:
             - apiGroups: ["networking.k8s.io"]
               resources: ["ingresses/status"]
               verbs: ["update"]
+            # Monitoring CRDs (Prometheus Operator stack)
+            - apiGroups: ["monitoring.coreos.com"]
+              resources:
+                [
+                  "alertmanagers",
+                  "prometheuses",
+                  "servicemonitors",
+                  "podmonitors",
+                  "probes",
+                  "thanosrulers",
+                  "prometheusagents",
+                ]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             # PersistentVolumes und PersistentVolumeClaims (für Storage)
             - apiGroups: [""]
               resources: ["persistentvolumes", "persistentvolumeclaims"]
