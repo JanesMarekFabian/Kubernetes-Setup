@@ -286,14 +286,26 @@ jobs:
                 [
                   "alertmanagerconfigs",
                   "alertmanagers",
+                  "alertmanagers/finalizers",
+                  "alertmanagers/status",
                   "prometheuses",
+                  "prometheuses/finalizers",
+                  "prometheuses/status",
                   "servicemonitors",
+                  "servicemonitors/status",
                   "podmonitors",
+                  "podmonitors/status",
                   "probes",
+                  "probes/status",
                   "thanosrulers",
+                  "thanosrulers/finalizers",
+                  "thanosrulers/status",
                   "prometheusagents",
+                  "prometheusagents/finalizers",
+                  "prometheusagents/status",
                   "prometheusrules",
                   "scrapeconfigs",
+                  "scrapeconfigs/status",
                 ]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "*"]
             # PersistentVolumes und PersistentVolumeClaims (für Storage)
