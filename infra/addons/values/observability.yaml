@@ -24,4 +24,44 @@ alertmanager:
     tag: "v0.26.0"
     registry: ""  # Will be set via --set in workflow
 
+prometheusOperator:
+  image:
+    repository: prometheus-operator/prometheus-operator
+    tag: "v0.71.1"
+    registry: ""  # Will be set via --set in workflow
+  prometheusConfigReloader:
+    image:
+      repository: prometheus-operator/prometheus-config-reloader
+      tag: "v0.71.1"
+      registry: ""  # Will be set via --set in workflow
+  configmapReload:
+    prometheus:
+      image:
+        repository: prometheus-operator/prometheus-config-reloader
+        tag: "v0.71.1"
+        registry: ""  # Will be set via --set in workflow
+    alertmanager:
+      image:
+        repository: prometheus-operator/prometheus-config-reloader
+        tag: "v0.71.1"
+        registry: ""  # Will be set via --set in workflow
+  admissionWebhooks:
+    patch:
+      image:
+        repository: jettech/kube-webhook-certgen
+        tag: "v1.5.1"
+        registry: ""  # Will be set via --set in workflow
+
+"prometheus-node-exporter":
+  image:
+    repository: prometheus/node-exporter
+    tag: "v1.6.1"
+    registry: ""  # Will be set via --set in workflow
+
+kube-state-metrics:
+  image:
+    repository: kube-state-metrics/kube-state-metrics
+    tag: "v2.10.1"
+    registry: ""  # Will be set via --set in workflow
+
 

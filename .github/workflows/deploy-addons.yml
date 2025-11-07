@@ -16,6 +16,11 @@ jobs:
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+      PROMETHEUS_OPERATOR_VERSION: v0.71.1
+      PROMETHEUS_CONFIG_RELOADER_VERSION: v0.71.1
+      PROMETHEUS_NODE_EXPORTER_VERSION: v1.6.1
+      KUBE_STATE_METRICS_VERSION: v2.10.1
+      KUBE_WEBHOOK_CERTGEN_VERSION: v1.5.1
     steps:
       - name: Login to ACR
         uses: docker/login-action@v3
@@ -79,6 +84,56 @@ jobs:
         run: |
           SOURCE_IMAGE="rancher/local-path-provisioner:v0.0.26"
           TARGET_IMAGE="${{ secrets.ACR_REGISTRY }}/rancher/local-path-provisioner:v0.0.26"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus Operator image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus-operator/prometheus-operator:${PROMETHEUS_OPERATOR_VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/prometheus-operator/prometheus-operator:${PROMETHEUS_OPERATOR_VERSION}"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus Config Reloader image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus-operator/prometheus-config-reloader:${PROMETHEUS_CONFIG_RELOADER_VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/prometheus-operator/prometheus-config-reloader:${PROMETHEUS_CONFIG_RELOADER_VERSION}"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Kube Webhook Certgen image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="docker.io/jettech/kube-webhook-certgen:${KUBE_WEBHOOK_CERTGEN_VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/jettech/kube-webhook-certgen:${KUBE_WEBHOOK_CERTGEN_VERSION}"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Prometheus Node Exporter image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="quay.io/prometheus/node-exporter:${PROMETHEUS_NODE_EXPORTER_VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/prometheus/node-exporter:${PROMETHEUS_NODE_EXPORTER_VERSION}"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          echo "✅ Mirrored: $SOURCE_IMAGE → $TARGET_IMAGE"
+
+      - name: Mirror Kube State Metrics image
+        shell: bash
+        run: |
+          SOURCE_IMAGE="registry.k8s.io/kube-state-metrics/kube-state-metrics:${KUBE_STATE_METRICS_VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/kube-state-metrics/kube-state-metrics:${KUBE_STATE_METRICS_VERSION}"
           docker pull "$SOURCE_IMAGE"
           docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
           docker push "$TARGET_IMAGE"
@@ -711,6 +766,13 @@ jobs:
             --set grafana.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --set prometheus.prometheusSpec.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --set alertmanager.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheusOperator.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheusOperator.prometheusConfigReloader.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheusOperator.configmapReload.prometheus.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheusOperator.configmapReload.alertmanager.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheusOperator.admissionWebhooks.patch.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set prometheus-node-exporter.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set kube-state-metrics.image.registry="${{ secrets.ACR_REGISTRY }}" \
             --wait --timeout 10m
 
       - name: Deploy Metrics Server
