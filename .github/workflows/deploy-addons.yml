@@ -208,15 +208,26 @@ jobs:
               verbs: ["create", "get", "list", "watch"]
             # Deployments, Services, ConfigMaps, Secrets
             - apiGroups: ["apps"]
-              resources: ["deployments", "daemonsets", "statefulsets"]
-              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
+              resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch", "*"]
             # Jobs (für Helm Hooks)
             - apiGroups: ["batch"]
-              resources: ["jobs"]
+              resources: ["jobs", "cronjobs"]
               verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
             - apiGroups: [""]
-              resources: ["services", "configmaps", "secrets", "pods", "endpoints"]
-              verbs: ["create", "update", "patch", "delete", "get", "list", "watch"]
+              resources:
+                [
+                  "services",
+                  "configmaps",
+                  "secrets",
+                  "pods",
+                  "endpoints",
+                  "limitranges",
+                  "replicationcontrollers",
+                  "resourcequotas",
+                  "nodes/metrics",
+                ]
+              verbs: ["create", "update", "patch", "delete", "get", "list", "watch", "*"]
             # ServiceAccounts
             - apiGroups: [""]
               resources: ["serviceaccounts"]
@@ -244,15 +255,15 @@ jobs:
             # Discovery (für EndpointSlices)
             - apiGroups: ["discovery.k8s.io"]
               resources: ["endpointslices"]
-              verbs: ["get", "list", "watch"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             # StorageClasses
             - apiGroups: ["storage.k8s.io"]
-              resources: ["storageclasses"]
+              resources: ["storageclasses", "volumeattachments"]
               verbs: ["get", "list", "watch", "patch"]
             # Helm Releases und Secrets (für Helm 3)
             - apiGroups: [""]
               resources: ["secrets"]
-              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "*"]
             # CustomResourceDefinitions (für Helm Charts mit CRDs)
             - apiGroups: ["apiextensions.k8s.io"]
               resources: ["customresourcedefinitions"]
@@ -265,10 +276,15 @@ jobs:
             - apiGroups: ["networking.k8s.io"]
               resources: ["ingresses/status"]
               verbs: ["update"]
+            # Horizontal Pod Autoscaler
+            - apiGroups: ["autoscaling"]
+              resources: ["horizontalpodautoscalers"]
+              verbs: ["get", "list", "watch"]
             # Monitoring CRDs (Prometheus Operator stack)
             - apiGroups: ["monitoring.coreos.com"]
               resources:
                 [
+                  "alertmanagerconfigs",
                   "alertmanagers",
                   "prometheuses",
                   "servicemonitors",
@@ -277,8 +293,9 @@ jobs:
                   "thanosrulers",
                   "prometheusagents",
                   "prometheusrules",
+                  "scrapeconfigs",
                 ]
-              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+              verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "*"]
             # PersistentVolumes und PersistentVolumeClaims (für Storage)
             - apiGroups: [""]
               resources: ["persistentvolumes", "persistentvolumeclaims"]
@@ -287,10 +304,28 @@ jobs:
             - apiGroups: [""]
               resources: ["events"]
               verbs: ["get", "list", "watch", "create", "patch"]
+            - apiGroups: ["events.k8s.io"]
+              resources: ["events"]
+              verbs: ["get", "list", "watch", "create", "patch"]
             # Admission Registration (für Webhooks, z.B. NGINX Ingress)
             - apiGroups: ["admissionregistration.k8s.io"]
               resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+            # Services subresources
+            - apiGroups: [""]
+              resources: ["services/finalizers"]
+              verbs: ["get", "create", "update", "delete"]
+            # Certificates (CSR approvals/reads)
+            - apiGroups: ["certificates.k8s.io"]
+              resources: ["certificatesigningrequests"]
+              verbs: ["get", "list", "watch"]
+            # Policy resources
+            - apiGroups: ["policy"]
+              resources: ["poddisruptionbudgets"]
+              verbs: ["get", "list", "watch"]
+            # Non-resource URLs for metrics endpoints
+            - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+              verbs: ["get"]
           ---
           apiVersion: rbac.authorization.k8s.io/v1
           kind: ClusterRoleBinding
