@@ -8,6 +8,17 @@ grafana:
     repository: grafana/grafana
     tag: "10.2.0"
     registry: ""  # Will be set via --set in workflow
+  sidecar:
+    dashboards:
+      image:
+        repository: kiwigrid/k8s-sidecar
+        tag: "1.30.10"
+        registry: ""  # Will be set via --set in workflow
+    datasources:
+      image:
+        repository: kiwigrid/k8s-sidecar
+        tag: "1.30.10"
+        registry: ""  # Will be set via --set in workflow
 
 prometheus:
   prometheusSpec:
@@ -55,7 +66,7 @@ prometheusOperator:
 "prometheus-node-exporter":
   image:
     repository: prometheus/node-exporter
-    tag: "v1.6.1"
+    tag: "v1.10.2"
     registry: ""  # Will be set via --set in workflow
 
 kube-state-metrics:
