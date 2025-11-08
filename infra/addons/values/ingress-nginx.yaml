@@ -4,7 +4,7 @@ controller:
   service:
     type: LoadBalancer
   image:
-    repository: ingress-nginx/controller
+    repository: registry.k8s.io/ingress-nginx/controller
     tag: "v1.9.4"
     # registry will be set via --set in workflow
 

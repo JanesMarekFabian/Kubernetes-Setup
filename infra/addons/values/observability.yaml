@@ -5,18 +5,18 @@ grafana:
   ingress:
     enabled: false
   image:
-    repository: grafana/grafana
+    repository: docker.io/grafana/grafana
     tag: "10.2.0"
     registry: ""  # Will be set via --set in workflow
   sidecar:
     dashboards:
       image:
-        repository: kiwigrid/k8s-sidecar
+        repository: quay.io/kiwigrid/k8s-sidecar
         tag: "1.30.10"
         registry: ""  # Will be set via --set in workflow
     datasources:
       image:
-        repository: kiwigrid/k8s-sidecar
+        repository: quay.io/kiwigrid/k8s-sidecar
         tag: "1.30.10"
         registry: ""  # Will be set via --set in workflow
 
@@ -24,54 +24,54 @@ prometheus:
   prometheusSpec:
     retention: 7d
     image:
-      repository: prometheus/prometheus
+      repository: quay.io/prometheus/prometheus
       tag: "v2.48.0"
       registry: ""  # Will be set via --set in workflow
 
 alertmanager:
   enabled: true
   image:
-    repository: prometheus/alertmanager
+    repository: quay.io/prometheus/alertmanager
     tag: "v0.26.0"
     registry: ""  # Will be set via --set in workflow
 
 prometheusOperator:
   image:
-    repository: prometheus-operator/prometheus-operator
-    tag: "v0.71.1"
+    repository: quay.io/prometheus-operator/prometheus-operator
+    tag: "v0.86.2"
     registry: ""  # Will be set via --set in workflow
   prometheusConfigReloader:
     image:
-      repository: prometheus-operator/prometheus-config-reloader
-      tag: "v0.71.1"
+      repository: quay.io/prometheus-operator/prometheus-config-reloader
+      tag: "v0.86.2"
       registry: ""  # Will be set via --set in workflow
   configmapReload:
     prometheus:
       image:
-        repository: prometheus-operator/prometheus-config-reloader
-        tag: "v0.71.1"
+        repository: quay.io/prometheus-operator/prometheus-config-reloader
+        tag: "v0.86.2"
         registry: ""  # Will be set via --set in workflow
     alertmanager:
       image:
-        repository: prometheus-operator/prometheus-config-reloader
-        tag: "v0.71.1"
+        repository: quay.io/prometheus-operator/prometheus-config-reloader
+        tag: "v0.86.2"
         registry: ""  # Will be set via --set in workflow
   admissionWebhooks:
     patch:
       image:
-        repository: jettech/kube-webhook-certgen
+        repository: docker.io/jettech/kube-webhook-certgen
         tag: "v1.5.1"
         registry: ""  # Will be set via --set in workflow
 
 "prometheus-node-exporter":
   image:
-    repository: prometheus/node-exporter
+    repository: quay.io/prometheus/node-exporter
     tag: "v1.10.2"
     registry: ""  # Will be set via --set in workflow
 
 kube-state-metrics:
   image:
-    repository: kube-state-metrics/kube-state-metrics
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
     tag: "v2.10.1"
     registry: ""  # Will be set via --set in workflow
 
