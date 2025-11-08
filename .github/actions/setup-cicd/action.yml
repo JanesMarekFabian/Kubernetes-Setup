@@ -1,4 +1,4 @@
-name: Setup CI/CD Cluster Access
+name: Setup CI/CD Cluster 
 description: Configure kubeconfig and ServiceAccount for deploying infrastructure add-ons.
 inputs:
   kubeconfig:
