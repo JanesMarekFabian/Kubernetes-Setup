@@ -1,0 +1,79 @@
+name: Deploy Monitoring Stack
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy Ingress Controller"]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Setup Python venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip PyYAML
+          echo "VENV_PYTHON=$(pwd)/.venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Generate ACR values
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV_PYTHON" scripts/generate_addon_artifacts.py
+
+      - name: Prepare namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n monitoring \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n monitoring \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy monitoring stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            -n monitoring \
+            -f infra/addons/values/observability.acr.yaml \
+            --wait --timeout 10m
+          kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || true
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -n monitoring
+

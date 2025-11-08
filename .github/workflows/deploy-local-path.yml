@@ -1,0 +1,61 @@
+name: Deploy Local Path Provisioner
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Mirror Base Images to ACR"]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Prepare namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns local-path-storage >/dev/null 2>&1 || kubectl create namespace local-path-storage
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n local-path-storage \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Local Path Provisioner
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns local-path-storage >/dev/null 2>&1 || kubectl create namespace local-path-storage
+          curl -sL https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml | \
+            sed "s|rancher/local-path-provisioner:v0.0.26|${ACR_REGISTRY}/rancher/local-path-provisioner:v0.0.26|g" | \
+            kubectl apply -f -
+          sleep 3
+          kubectl patch serviceaccount local-path-provisioner-service-account -n local-path-storage \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=5m
+          kubectl patch storageclass local-path \
+            -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' \
+            || echo "StorageClass already default"
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -n local-path-storage
+          kubectl get storageclass
+

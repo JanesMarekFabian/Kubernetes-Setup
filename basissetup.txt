@@ -100,6 +100,10 @@ kubectl get pods -n ingress-nginx
 kubectl get pods -n monitoring
 kubectl top nodes
 
-# CI/CD: Diese Add-ons können automatisiert deployed werden über
-# GitHub Actions Workflow: .github/workflows/deploy-addons.yml
-# Script: infra/addons/deploy.sh (nutzt Werte aus infra/addons/values/*)
+# CI/CD: Automatisiert per GitHub Actions (in Reihenfolge):
+#   1) .github/workflows/build-push.yml          → spiegelt Basis-Images nach ACR
+#   2) .github/workflows/deploy-local-path.yml   → StorageClass & Local Path Provisioner
+#   3) .github/workflows/deploy-metrics.yml      → Metrics Server
+#   4) .github/workflows/deploy-ingress.yml      → NGINX Ingress Controller
+#   5) .github/workflows/deploy-monitoring.yml   → kube-prometheus-stack
+# Alle Workflows bieten zusätzlich workflow_dispatch für manuelle Ausführung.

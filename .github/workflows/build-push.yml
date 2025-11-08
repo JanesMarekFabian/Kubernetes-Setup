@@ -1,43 +1,65 @@
-name: Build and Push to ACR
+name: Mirror Base Images to ACR
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
     paths:
-      - 'apps/**'
+      - 'infra/addons/**'
       - '.github/workflows/build-push.yml'
 
 jobs:
-  build:
+  mirror:
     runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Login to ACR (basic auth)
+      - name: Setup Python venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip PyYAML
+          echo "VENV_PYTHON=$(pwd)/.venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Login to ACR
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_REGISTRY }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      # Optional: login to Docker Hub if you face rate limits and have creds
-      # - uses: docker/login-action@v3
-      #   with:
-      #     username: ${{ secrets.DOCKERHUB_USERNAME }}
-      #     password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push example service
+      - name: Generate mirror artifacts
+        id: map
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.ACR_REGISTRY }}/apps/myservice:${{ github.sha }}"
-          docker build -t "$IMAGE" apps/myservice
-          docker push "$IMAGE"
-        shell: bash
+          "$VENV_PYTHON" scripts/generate_addon_artifacts.py
+          echo "map-file=image-map.txt" >> "$GITHUB_OUTPUT"
+          echo "values-file=infra/addons/values/observability.acr.yaml" >> "$GITHUB_OUTPUT"
 
-      - name: Output image ref
-        id: meta
-        run: echo "image=${{ secrets.ACR_REGISTRY }}/apps/myservice:${{ github.sha }}" >> $GITHUB_OUTPUT
+      - name: Mirror container images
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r SOURCE_REPO TARGET_REPO TAG; do
+            [[ -z "${SOURCE_REPO:-}" ]] && continue
+            SOURCE_IMAGE="${SOURCE_REPO}:${TAG}"
+            TARGET_IMAGE="${ACR_REGISTRY}/${TARGET_REPO}:${TAG}"
+            echo "→ Mirroring $SOURCE_IMAGE to $TARGET_IMAGE"
+            docker pull "$SOURCE_IMAGE"
+            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+            docker push "$TARGET_IMAGE"
+          done < image-map.txt
 
-
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-mirror-metadata
+          path: |
+            image-map.txt
+            infra/addons/values/observability.acr.yaml

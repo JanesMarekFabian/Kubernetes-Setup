@@ -1,0 +1,111 @@
+name: Setup CI/CD Cluster Access
+description: Configure kubeconfig and ServiceAccount for deploying infrastructure add-ons.
+inputs:
+  kubeconfig:
+    description: Raw or base64-encoded admin kubeconfig
+    required: true
+  serviceaccount-manifest:
+    description: Path to the CICD ServiceAccount manifest
+    required: false
+    default: infra/rbac/cicd-serviceaccount.yaml
+runs:
+  using: composite
+  steps:
+    - name: Configure admin kubeconfig
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.kube
+
+        SECRET='${{ inputs.kubeconfig }}'
+        TMP_FILE="$(mktemp)"
+
+        # Attempt base64 decode; fall back to plain text if it fails or is not a kubeconfig
+        if printf '%s' "$SECRET" | base64 -d > "$TMP_FILE" 2>/dev/null && \
+           head -n 1 "$TMP_FILE" | grep -qE '^(apiVersion|kind):'; then
+          echo "Detected base64-encoded kubeconfig"
+        else
+          printf '%s' "$SECRET" > "$TMP_FILE"
+        fi
+
+        if ! head -n 1 "$TMP_FILE" | grep -qE '^(apiVersion|kind):'; then
+          echo "❌ Unable to parse kubeconfig"; exit 1
+        fi
+
+        mv "$TMP_FILE" ~/.kube/config-admin
+        chmod 600 ~/.kube/config-admin
+        echo "KUBECONFIG=$HOME/.kube/config-admin" >> "$GITHUB_ENV"
+
+    - name: Apply CICD RBAC
+      shell: bash
+      run: |
+        set -euo pipefail
+        kubectl apply -f '${{ inputs.serviceaccount-manifest }}'
+
+    - name: Generate CI/CD kubeconfig
+      shell: bash
+      run: |
+        set -euo pipefail
+        export KUBECONFIG="$HOME/.kube/config-admin"
+
+        # Wait for ServiceAccount token to exist (Kubernetes >= 1.24 creates secrets on demand)
+        kubectl delete secret cicd-deploy-token -n kube-system --ignore-not-found >/dev/null 2>&1 || true
+        kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cicd-deploy-token
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: cicd-deploy
+type: kubernetes.io/service-account-token
+EOF
+
+        for i in {1..10}; do
+          TOKEN=$(kubectl get secret cicd-deploy-token -n kube-system -o jsonpath='{.data.token}' 2>/dev/null || true)
+          CA_CERT=$(kubectl get secret cicd-deploy-token -n kube-system -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)
+          if [ -n "$TOKEN" ] && [ -n "$CA_CERT" ]; then
+            break
+          fi
+          echo "Waiting for ServiceAccount token ($i/10)..."
+          sleep 3
+        done
+
+        if [ -z "$TOKEN" ] || [ -z "$CA_CERT" ]; then
+          echo "❌ Failed to retrieve ServiceAccount token"; exit 1
+        fi
+
+        CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+
+        cat > ~/.kube/config <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: cluster
+  cluster:
+    server: ${CLUSTER_ENDPOINT}
+    certificate-authority-data: ${CA_CERT}
+contexts:
+- name: cicd-deploy
+  context:
+    cluster: cluster
+    namespace: kube-system
+    user: cicd-deploy
+current-context: cicd-deploy
+users:
+- name: cicd-deploy
+  user:
+    token: $(printf '%s' "$TOKEN" | base64 -d)
+EOF
+
+        chmod 600 ~/.kube/config
+        echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
+
+    - name: Validate CI/CD access
+      shell: bash
+      run: |
+        set -euo pipefail
+        export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+        kubectl version --short
+        kubectl get nodes
+

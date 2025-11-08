@@ -1,0 +1,67 @@
+name: Deploy Ingress Controller
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy Metrics Server"]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Ensure namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n ingress-nginx \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      - name: Deploy ingress controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACR_IMAGE="${ACR_REGISTRY}/ingress-nginx/controller:v1.9.4"
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ingress-nginx \
+            -f infra/addons/values/ingress-nginx.yaml \
+            --set controller.image.image="$ACR_IMAGE" \
+            --timeout 5m
+          kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=5m
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -n ingress-nginx
+
