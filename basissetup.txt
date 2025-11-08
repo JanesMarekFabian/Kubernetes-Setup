@@ -100,10 +100,11 @@ kubectl get pods -n ingress-nginx
 kubectl get pods -n monitoring
 kubectl top nodes
 
-# CI/CD: Automatisiert per GitHub Actions (in Reihenfolge):
-#   1) .github/workflows/build-push.yml          → spiegelt Basis-Images nach ACR
-#   2) .github/workflows/deploy-local-path.yml   → StorageClass & Local Path Provisioner
-#   3) .github/workflows/deploy-metrics.yml      → Metrics Server
-#   4) .github/workflows/deploy-ingress.yml      → NGINX Ingress Controller
-#   5) .github/workflows/deploy-monitoring.yml   → kube-prometheus-stack
-# Alle Workflows bieten zusätzlich workflow_dispatch für manuelle Ausführung.
+# CI/CD: Automatisiert per GitHub Actions (ein Workflow, Jobs laufen seriell):
+#   - .github/workflows/build-push.yml
+#       • mirror → Images nach ACR
+#       • local-path → StorageClass & Local Path Provisioner
+#       • metrics → Metrics Server
+#       • ingress → NGINX Ingress Controller
+#       • monitoring → kube-prometheus-stack
+#   Manuelle Auslösung weiterhin via workflow_dispatch möglich.
