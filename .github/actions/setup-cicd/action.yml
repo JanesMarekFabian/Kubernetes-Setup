@@ -77,26 +77,26 @@ EOF
 
         CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
-        cat > ~/.kube/config <<EOF
-apiVersion: v1
-kind: Config
-clusters:
-- name: cluster
-  cluster:
-    server: ${CLUSTER_ENDPOINT}
-    certificate-authority-data: ${CA_CERT}
-contexts:
-- name: cicd-deploy
-  context:
-    cluster: cluster
-    namespace: kube-system
-    user: cicd-deploy
-current-context: cicd-deploy
-users:
-- name: cicd-deploy
-  user:
-    token: $(printf '%s' "$TOKEN" | base64 -d)
-EOF
+        cat <<EOF | sed 's/^        //' > ~/.kube/config
+        apiVersion: v1
+        kind: Config
+        clusters:
+        - name: cluster
+          cluster:
+            server: ${CLUSTER_ENDPOINT}
+            certificate-authority-data: ${CA_CERT}
+        contexts:
+        - name: cicd-deploy
+          context:
+            cluster: cluster
+            namespace: kube-system
+            user: cicd-deploy
+        current-context: cicd-deploy
+        users:
+        - name: cicd-deploy
+          user:
+            token: $(printf '%s' "$TOKEN" | base64 -d)
+        EOF
 
         chmod 600 ~/.kube/config
         echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
