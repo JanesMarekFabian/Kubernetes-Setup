@@ -774,18 +774,18 @@ jobs:
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.yaml \
-            --set grafana.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheus.prometheusSpec.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set alertmanager.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheusOperator.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheusOperator.prometheusConfigReloader.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheusOperator.configmapReload.prometheus.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheusOperator.configmapReload.alertmanager.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheusOperator.admissionWebhooks.patch.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set prometheus-node-exporter.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set kube-state-metrics.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set grafana.sidecar.dashboards.image.registry="${{ secrets.ACR_REGISTRY }}" \
-            --set grafana.sidecar.datasources.image.registry="${{ secrets.ACR_REGISTRY }}" \
+            --set grafana.image.repository="${{ secrets.ACR_REGISTRY }}/grafana/grafana" \
+            --set prometheus.prometheusSpec.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus/prometheus" \
+            --set alertmanager.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus/alertmanager" \
+            --set prometheusOperator.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus-operator/prometheus-operator" \
+            --set prometheusOperator.prometheusConfigReloader.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus-operator/prometheus-config-reloader" \
+            --set prometheusOperator.configmapReload.prometheus.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus-operator/prometheus-config-reloader" \
+            --set prometheusOperator.configmapReload.alertmanager.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus-operator/prometheus-config-reloader" \
+            --set prometheusOperator.admissionWebhooks.patch.image.repository="${{ secrets.ACR_REGISTRY }}/jettech/kube-webhook-certgen" \
+            --set prometheus-node-exporter.image.repository="${{ secrets.ACR_REGISTRY }}/prometheus/node-exporter" \
+            --set kube-state-metrics.image.repository="${{ secrets.ACR_REGISTRY }}/kube-state-metrics/kube-state-metrics" \
+            --set grafana.sidecar.dashboards.image.repository="${{ secrets.ACR_REGISTRY }}/kiwigrid/k8s-sidecar" \
+            --set grafana.sidecar.datasources.image.repository="${{ secrets.ACR_REGISTRY }}/kiwigrid/k8s-sidecar" \
             --wait --timeout 10m
 
       - name: Deploy Metrics Server
