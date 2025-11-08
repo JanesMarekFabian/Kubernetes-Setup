@@ -50,16 +50,19 @@ runs:
 
         # Wait for ServiceAccount token to exist (Kubernetes >= 1.24 creates secrets on demand)
         kubectl delete secret cicd-deploy-token -n kube-system --ignore-not-found >/dev/null 2>&1 || true
-        kubectl apply -f - <<'EOF'
-apiVersion: v1
-kind: Secret
-metadata:
-  name: cicd-deploy-token
-  namespace: kube-system
-  annotations:
-    kubernetes.io/service-account.name: cicd-deploy
-type: kubernetes.io/service-account-token
-EOF
+        cat <<'EOF' > /tmp/cicd-token.yaml.tpl
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: cicd-deploy-token
+          namespace: kube-system
+          annotations:
+            kubernetes.io/service-account.name: cicd-deploy
+        type: kubernetes.io/service-account-token
+        EOF
+        sed 's/^        //' /tmp/cicd-token.yaml.tpl > /tmp/cicd-token.yaml
+        kubectl apply -f /tmp/cicd-token.yaml
+        rm -f /tmp/cicd-token.yaml.tpl /tmp/cicd-token.yaml
 
         for i in {1..10}; do
           TOKEN=$(kubectl get secret cicd-deploy-token -n kube-system -o jsonpath='{.data.token}' 2>/dev/null || true)
@@ -77,26 +80,28 @@ EOF
 
         CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
-        cat <<'EOF' > ~/.kube/config
-apiVersion: v1
-kind: Config
-clusters:
-- name: cluster
-  cluster:
-    server: ${CLUSTER_ENDPOINT}
-    certificate-authority-data: ${CA_CERT}
-contexts:
-- name: cicd-deploy
-  context:
-    cluster: cluster
-    namespace: kube-system
-    user: cicd-deploy
-current-context: cicd-deploy
-users:
-- name: cicd-deploy
-  user:
-    token: $(printf '%s' "$TOKEN" | base64 -d)
-EOF
+        cat <<'EOF' > /tmp/kubeconfig.tpl
+        apiVersion: v1
+        kind: Config
+        clusters:
+        - name: cluster
+          cluster:
+            server: ${CLUSTER_ENDPOINT}
+            certificate-authority-data: ${CA_CERT}
+        contexts:
+        - name: cicd-deploy
+          context:
+            cluster: cluster
+            namespace: kube-system
+            user: cicd-deploy
+        current-context: cicd-deploy
+        users:
+        - name: cicd-deploy
+          user:
+            token: $(printf '%s' "$TOKEN" | base64 -d)
+        EOF
+        sed 's/^        //' /tmp/kubeconfig.tpl > ~/.kube/config
+        rm -f /tmp/kubeconfig.tpl
 
         chmod 600 ~/.kube/config
         echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
