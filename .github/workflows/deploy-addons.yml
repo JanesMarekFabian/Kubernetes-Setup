@@ -7,10 +7,15 @@ on:
     paths:
       - 'infra/addons/**'
       - '.github/workflows/deploy-addons.yml'
+  workflow_run:
+    workflows: ["Build and Push to ACR"]
+    types:
+      - completed
 
 jobs:
   mirror-images:
     name: Mirror Images to ACR
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     env:
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
