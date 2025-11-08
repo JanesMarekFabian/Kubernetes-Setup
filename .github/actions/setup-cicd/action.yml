@@ -111,6 +111,6 @@ runs:
       run: |
         set -euo pipefail
         export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
-        kubectl version --short
+        kubectl version --client
         kubectl get nodes
 

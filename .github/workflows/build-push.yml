@@ -1,12 +1,12 @@
 name: Deploy Base Infrastructure
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
     paths:
       - 'infra/addons/**'
       - '.github/workflows/build-push.yml'
+  workflow_dispatch:
 
 jobs:
   mirror:
