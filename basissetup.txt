@@ -50,7 +50,7 @@ kubectl get namespaces
 kubectl get services --all-namespaces
 
 # Namespaces erstellen
-kubectl create namespaceX
+kubectl create namespace <NAME>
 ...
 
 
@@ -85,6 +85,7 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
 # (Optional) Grafana Zugriff lokal testen
 # kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 # Browser: http://localhost:3000
+# Hinweis: Setze das Grafana-Admin-Passwort via Secret oder Helm-Values (z. B. --set grafana.adminPassword=<SECRET>).
 
 # d) Meine Wahl (ein Tool): metrics-server (ermöglicht kubectl top / HPA)
 kubectl create namespace kube-system --dry-run=client -o yaml | kubectl apply -f -
@@ -108,3 +109,5 @@ kubectl top nodes
 #       • ingress → NGINX Ingress Controller
 #       • monitoring → kube-prometheus-stack
 #   Manuelle Auslösung weiterhin via workflow_dispatch möglich.
+#   Voraussetzung: Umgebungsvariable ACR_REGISTRY (z. B. myregistry.azurecr.io) muss gesetzt sein,
+#   damit das Mirroring-Skript `scripts/generate_addon_artifacts.py` erfolgreich läuft.

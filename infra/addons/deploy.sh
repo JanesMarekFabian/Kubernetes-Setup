@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ensure_repo() {
+  local name="$1"
+  local url="$2"
+  local repos
+  repos=$(helm repo list 2>/dev/null | awk 'NR>1 {print $1}' || true)
+  if ! grep -qx "$name" <<<"$repos"; then
+    helm repo add "$name" "$url"
+  fi
+}
+
+ensure_repo "ingress-nginx" "https://kubernetes.github.io/ingress-nginx"
+ensure_repo "prometheus-community" "https://prometheus-community.github.io/helm-charts"
+helm repo update ingress-nginx prometheus-community >/dev/null
+
 # Netzwerk: NGINX Ingress Controller
 kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \

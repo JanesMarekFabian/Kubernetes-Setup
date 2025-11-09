@@ -78,9 +78,14 @@ runs:
           echo "❌ Failed to retrieve ServiceAccount token"; exit 1
         fi
 
+        TOKEN_DECODED=$(printf '%s' "$TOKEN" | base64 -d | tr -d '\n')
+        if [ -z "$TOKEN_DECODED" ]; then
+          echo "❌ Failed to decode ServiceAccount token"; exit 1
+        fi
+
         CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 
-        cat <<'EOF' > /tmp/kubeconfig.tpl
+        cat <<EOF > /tmp/kubeconfig.tpl
         apiVersion: v1
         kind: Config
         clusters:
@@ -98,7 +103,7 @@ runs:
         users:
         - name: cicd-deploy
           user:
-            token: $(printf '%s' "$TOKEN" | base64 -d)
+            token: ${TOKEN_DECODED}
         EOF
         sed 's/^        //' /tmp/kubeconfig.tpl > ~/.kube/config
         rm -f /tmp/kubeconfig.tpl

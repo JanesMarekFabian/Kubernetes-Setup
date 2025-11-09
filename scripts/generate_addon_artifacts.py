@@ -101,7 +101,10 @@ def rewrite_observability(acr_registry: str, data: Dict) -> None:
 def main() -> None:
     acr_registry = os.environ.get("ACR_REGISTRY")
     if not acr_registry:
-        raise RuntimeError("ACR_REGISTRY environment variable is required")
+        raise RuntimeError(
+            "ACR_REGISTRY environment variable is required (e.g. myregistry.azurecr.io). "
+            "Set it in the workflow environment or export it locally before running this script."
+        )
 
     observability = load_yaml(OBSERVABILITY_VALUES)
     ingress = load_yaml(INGRESS_VALUES)
