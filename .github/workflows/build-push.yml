@@ -1,4 +1,4 @@
-name: Deploy Base Infrastructure
+name: Deploy Base Kubernetes-Infrastructure
 
 on:
   push:
