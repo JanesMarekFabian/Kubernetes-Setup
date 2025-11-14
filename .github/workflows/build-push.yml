@@ -229,6 +229,26 @@ jobs:
         with:
           kubeconfig: ${{ secrets.KUBECONFIG }}
 
+      - name: Remove Traefik (k3s default) to avoid conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🗑️ Removing Traefik components to avoid port conflicts with NGINX..."
+          
+          # Delete Traefik Service (LoadBalancer)
+          kubectl delete -n kube-system svc traefik --ignore-not-found=true || true
+          
+          # Delete Traefik Deployment
+          kubectl delete -n kube-system deployment traefik --ignore-not-found=true || true
+          
+          # Delete Traefik DaemonSet (svclb)
+          kubectl delete -n kube-system daemonset svclb-traefik --ignore-not-found=true || true
+          
+          # Wait a bit for resources to be cleaned up
+          sleep 5
+          
+          echo "✅ Traefik components removed (if they existed)"
+
       - name: Ensure namespace and pull secret
         shell: bash
         run: |
