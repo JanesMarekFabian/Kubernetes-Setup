@@ -159,6 +159,9 @@ jobs:
           - apiGroups: [""]
             resources: ["persistentvolumeclaims"]
             verbs: ["get", "list", "watch", "update"]
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["create", "delete", "get", "list", "watch"]
           - apiGroups: ["storage.k8s.io"]
             resources: ["storageclasses"]
             verbs: ["get", "list", "watch"]
@@ -414,8 +417,21 @@ jobs:
             --docker-password="${ACR_PASSWORD}" \
             -n monitoring \
             --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Patch default ServiceAccount
           kubectl patch serviceaccount default -n monitoring \
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Patch kube-prometheus-stack-admission ServiceAccount (wird vom Chart erstellt)
+          kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Patch alle ServiceAccounts im monitoring Namespace (für zukünftige)
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            echo "Patching ServiceAccount: $sa"
+            kubectl patch serviceaccount "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          done
 
       - name: Install helm dependencies
         shell: bash
@@ -434,6 +450,25 @@ jobs:
             -f infra/addons/values/observability.acr.yaml \
             --wait --timeout 10m
           kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || true
+
+      - name: Patch ServiceAccounts after deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔐 Patching all ServiceAccounts in monitoring namespace with ACR pull secret..."
+          # Patch alle ServiceAccounts, die Helm erstellt hat
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            echo "Patching ServiceAccount: $sa"
+            kubectl patch serviceaccount "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          done
+          
+          # Restart Jobs/Pods, die ImagePullBackOff haben
+          echo "🔄 Restarting failed pods/jobs..."
+          for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep admission); do
+            echo "Deleting job to trigger restart: $job"
+            kubectl delete "$job" -n monitoring --ignore-not-found=true || true
+          done
 
       - name: Summary
         shell: bash
