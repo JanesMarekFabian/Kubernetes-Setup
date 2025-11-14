@@ -92,19 +92,21 @@ def write_image_map(image_entries: Iterable[Tuple[str, str]]) -> None:
 
 def rewrite_observability(acr_registry: str, data: Dict) -> None:
     def normalize_repo(repository: str) -> str:
+        # Remove registry prefix if present, return only path (e.g., "jettech/kube-webhook-certgen")
         parts = repository.split("/")
         if parts and (parts[0] in {"docker.io", "quay.io"} or "." in parts[0] or ":" in parts[0]):
             parts = parts[1:]
-        return f"{acr_registry}/{'/'.join(parts)}"
+        return "/".join(parts)
 
     def patch(node):
         if isinstance(node, dict):
             if "repository" in node and node["repository"]:
+                # Normalize repository to remove registry prefix (keep only path)
                 node["repository"] = normalize_repo(str(node["repository"]).strip())
             if "registry" in node:
-                # Remove registry field completely instead of setting to empty string
-                # This prevents Helm from creating invalid image paths like "/repository"
-                del node["registry"]
+                # Set registry to ACR instead of removing it
+                # This way Helm will use: ${registry}/${repository} = acr.io/jettech/kube-webhook-certgen
+                node["registry"] = acr_registry
             for value in node.values():
                 patch(value)
         elif isinstance(node, list):
