@@ -135,6 +135,72 @@ jobs:
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=5m
 
+      - name: Fix k3s Local Path Provisioner RBAC and StorageClass
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Check if k3s provisioner exists in kube-system namespace
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            echo "🔧 Fixing RBAC for k3s Local Path Provisioner in kube-system..."
+            
+            # Apply RBAC for local-path-provisioner-service-account
+            cat <<EOF | kubectl apply -f -
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: local-path-provisioner-role
+          rules:
+          - apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "create", "delete"]
+          - apiGroups: [""]
+            resources: ["persistentvolumeclaims"]
+            verbs: ["get", "list", "watch", "update"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["events"]
+            verbs: ["create", "patch"]
+          - apiGroups: [""]
+            resources: ["endpoints"]
+            verbs: ["get", "list", "watch", "create", "update", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: local-path-provisioner-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: local-path-provisioner-role
+          subjects:
+          - kind: ServiceAccount
+            name: local-path-provisioner-service-account
+            namespace: kube-system
+          EOF
+            echo "✅ RBAC for k3s Local Path Provisioner applied"
+          fi
+          
+          # Ensure StorageClass exists (for both k3s and manual deployments)
+          if ! kubectl get storageclass local-path >/dev/null 2>&1; then
+            echo "📦 Creating StorageClass local-path..."
+            cat <<EOF | kubectl apply -f -
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: local-path
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "true"
+          provisioner: rancher.io/local-path
+          volumeBindingMode: WaitForFirstConsumer
+          reclaimPolicy: Delete
+          EOF
+            echo "✅ StorageClass local-path created"
+          else
+            echo "✅ StorageClass local-path already exists"
+          fi
+
       - name: Ensure StorageClass is default
         shell: bash
         run: |
