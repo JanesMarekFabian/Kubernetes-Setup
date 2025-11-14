@@ -244,10 +244,14 @@ jobs:
           # Delete Traefik DaemonSet (svclb)
           kubectl delete -n kube-system daemonset svclb-traefik --ignore-not-found=true || true
           
+          # Delete Traefik Helm Install Jobs (CRD and main install)
+          kubectl delete -n kube-system job helm-install-traefik-crd --ignore-not-found=true || true
+          kubectl delete -n kube-system job helm-install-traefik --ignore-not-found=true || true
+          
           # Wait a bit for resources to be cleaned up
           sleep 5
           
-          echo "✅ Traefik components removed (if they existed)"
+          echo "✅ Traefik components and Helm install jobs removed (if they existed)"
 
       - name: Ensure namespace and pull secret
         shell: bash
