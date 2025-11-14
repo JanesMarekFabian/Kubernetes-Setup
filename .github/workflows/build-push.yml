@@ -244,14 +244,37 @@ jobs:
           # Delete Traefik DaemonSet (svclb)
           kubectl delete -n kube-system daemonset svclb-traefik --ignore-not-found=true || true
           
-          # Delete Traefik Helm Install Jobs (CRD and main install)
+          # Delete Traefik Helm Install Jobs (CRD and main install) - delete all matching jobs
+          kubectl delete -n kube-system jobs -l app=helm,name=traefik --ignore-not-found=true || true
           kubectl delete -n kube-system job helm-install-traefik-crd --ignore-not-found=true || true
           kubectl delete -n kube-system job helm-install-traefik --ignore-not-found=true || true
+          
+          # Disable Traefik in k3s configuration to prevent auto-reinstall
+          echo "🔧 Disabling Traefik in k3s configuration..."
+          if [ -f /etc/rancher/k3s/config.yaml ]; then
+            # Add disable traefik flag if not already present
+            if ! grep -q "traefik" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+              # Check if disable section exists
+              if grep -q "^disable:" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+                # Add to existing disable section
+                sudo sed -i '/^disable:/a\  - traefik' /etc/rancher/k3s/config.yaml 2>/dev/null || echo "⚠️ Could not modify k3s config"
+              else
+                # Create new disable section
+                echo "disable:" | sudo tee -a /etc/rancher/k3s/config.yaml > /dev/null
+                echo "  - traefik" | sudo tee -a /etc/rancher/k3s/config.yaml > /dev/null || echo "⚠️ Could not modify k3s config"
+              fi
+            fi
+          else
+            # Create config file with traefik disabled
+            echo "disable:" | sudo tee /etc/rancher/k3s/config.yaml > /dev/null
+            echo "  - traefik" | sudo tee -a /etc/rancher/k3s/config.yaml > /dev/null || echo "⚠️ Could not create k3s config (may require manual intervention)"
+          fi
           
           # Wait a bit for resources to be cleaned up
           sleep 5
           
           echo "✅ Traefik components and Helm install jobs removed (if they existed)"
+          echo "⚠️ Note: To fully disable Traefik, restart k3s or add '--disable traefik' to k3s startup flags"
 
       - name: Ensure namespace and pull secret
         shell: bash

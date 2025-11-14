@@ -102,7 +102,9 @@ def rewrite_observability(acr_registry: str, data: Dict) -> None:
             if "repository" in node and node["repository"]:
                 node["repository"] = normalize_repo(str(node["repository"]).strip())
             if "registry" in node:
-                node["registry"] = ""
+                # Remove registry field completely instead of setting to empty string
+                # This prevents Helm from creating invalid image paths like "/repository"
+                del node["registry"]
             for value in node.values():
                 patch(value)
         elif isinstance(node, list):
