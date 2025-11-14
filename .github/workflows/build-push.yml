@@ -312,7 +312,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p infra/addons/values
-          cp observability.acr.yaml infra/addons/values/observability.acr.yaml
+          # Artifacts preserve directory structure, so check both locations
+          if [ -f "infra/addons/values/observability.acr.yaml" ]; then
+            echo "✅ observability.acr.yaml found in infra/addons/values/"
+          elif [ -f "observability.acr.yaml" ]; then
+            cp observability.acr.yaml infra/addons/values/observability.acr.yaml
+            echo "✅ observability.acr.yaml copied to infra/addons/values/"
+          else
+            echo "⚠️ observability.acr.yaml not found, will be generated if needed"
+          fi
 
       - name: Setup CICD access
         uses: ./.github/actions/setup-cicd
