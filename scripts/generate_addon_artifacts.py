@@ -9,9 +9,11 @@ Outputs:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+from urllib.request import urlopen
 
 import yaml
 
@@ -22,10 +24,27 @@ INGRESS_VALUES = VALUES_DIR / "ingress-nginx.yaml"
 OUTPUT_IMAGE_MAP = ROOT / "image-map.txt"
 OUTPUT_OBSERVABILITY_ACR = VALUES_DIR / "observability.acr.yaml"
 
-STATIC_IMAGES: List[Tuple[str, str]] = [
-    ("registry.k8s.io/metrics-server/metrics-server", "v0.6.4"),
-    ("docker.io/rancher/local-path-provisioner", "v0.0.26"),
-]
+
+def get_latest_metrics_server_version() -> str:
+    """Fetch the latest metrics-server version from GitHub releases."""
+    try:
+        with urlopen("https://api.github.com/repos/kubernetes-sigs/metrics-server/releases/latest", timeout=10) as response:
+            data = json.loads(response.read())
+            version = data.get("tag_name", "v0.8.0")
+            print(f"📦 Latest metrics-server version: {version}")
+            return version
+    except Exception as e:
+        print(f"⚠️ Failed to fetch latest metrics-server version: {e}, using fallback v0.8.0")
+        return "v0.8.0"
+
+
+def get_static_images() -> List[Tuple[str, str]]:
+    """Get static images with dynamically fetched versions."""
+    metrics_version = get_latest_metrics_server_version()
+    return [
+        ("registry.k8s.io/metrics-server/metrics-server", metrics_version),
+        ("docker.io/rancher/local-path-provisioner", "v0.0.26"),
+    ]
 
 
 def load_yaml(path: Path) -> Dict:
@@ -110,7 +129,7 @@ def main() -> None:
     ingress = load_yaml(INGRESS_VALUES)
 
     image_entries = list(collect_images(observability)) + list(collect_images(ingress))
-    image_entries.extend(STATIC_IMAGES)
+    image_entries.extend(get_static_images())
 
     write_image_map(image_entries)
     rewrite_observability(acr_registry, observability)

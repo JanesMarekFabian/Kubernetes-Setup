@@ -188,9 +188,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "📦 Deploying Metrics Server from latest GitHub release..."
           curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | \
             sed "s|registry.k8s.io/metrics-server/metrics-server|${ACR_REGISTRY}/metrics-server/metrics-server|g" | \
             kubectl apply -f -
+          
+          # Patch metrics-server ServiceAccount with pull secret (must be done after deployment creates the SA)
+          echo "🔐 Patching metrics-server ServiceAccount with ACR pull secret..."
+          sleep 2
+          kubectl patch serviceaccount metrics-server -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Restart deployment to pick up the new pull secret
+          kubectl rollout restart deployment/metrics-server -n kube-system || true
+          
+          echo "⏳ Waiting for Metrics Server to be ready..."
           kubectl -n kube-system rollout status deployment/metrics-server --timeout=5m
 
       - name: Summary
