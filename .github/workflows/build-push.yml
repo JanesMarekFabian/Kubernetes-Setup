@@ -151,6 +151,9 @@ jobs:
             name: local-path-provisioner-role
           rules:
           - apiGroups: [""]
+            resources: ["nodes"]
+            verbs: ["get", "list"]
+          - apiGroups: [""]
             resources: ["persistentvolumes"]
             verbs: ["get", "list", "watch", "create", "delete"]
           - apiGroups: [""]
