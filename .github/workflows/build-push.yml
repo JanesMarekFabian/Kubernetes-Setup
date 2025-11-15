@@ -445,11 +445,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          
+          # Debug: Zeige die verwendete Values-Datei
+          echo "📋 Using values file:"
+          cat infra/addons/values/observability.acr.yaml | head -50
+          
+          # Debug: Prüfe aktuelle Pods vor Deployment
+          echo "📊 Current pods in monitoring namespace:"
+          kubectl get pods -n monitoring || true
+          
+          # Deploy asynchron (ohne --wait, damit Workflow nicht hängt)
+          echo "🚀 Deploying monitoring stack (asynchron)..."
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
-            --wait --timeout 10m
-          kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || true
+            --timeout 10m
+          
+          echo "✅ Helm deployment command completed. Resources are being created in the background."
+          
+          # Warte gezielt auf den Operator (wichtigster Teil)
+          echo "⏳ Waiting for operator to be ready..."
+          kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || {
+            echo "⚠️ Operator rollout status check failed or timed out"
+            echo "📊 Checking operator pod status:"
+            kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
+          }
+          
+          # Zeige Status aller Pods
+          echo "📊 Current pod status:"
+          kubectl get pods -n monitoring -o wide || true
 
       - name: Patch ServiceAccounts after deployment
         shell: bash
