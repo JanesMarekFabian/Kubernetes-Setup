@@ -454,6 +454,14 @@ jobs:
           echo "📊 Current pods in monitoring namespace:"
           kubectl get pods -n monitoring || true
           
+          # Bereinige alte fehlgeschlagene Admission-Jobs
+          echo "🧹 Cleaning up old failed admission jobs..."
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+          kubectl delete pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --field-selector=status.phase!=Running --ignore-not-found=true || true
+          
+          # Warte kurz, damit Cleanup abgeschlossen ist
+          sleep 2
+          
           # Deploy asynchron (ohne --wait, damit Workflow nicht hängt)
           echo "🚀 Deploying monitoring stack (asynchron)..."
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
