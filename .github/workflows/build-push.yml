@@ -473,6 +473,15 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
+          # Patch ServiceAccounts SOFORT nach Deployment (bevor Jobs starten)
+          echo "🔐 Patching ServiceAccounts immediately after deployment..."
+          sleep 3  # Kurz warten, damit ServiceAccounts erstellt sind
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            echo "Patching ServiceAccount: $sa"
+            kubectl patch serviceaccount "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          done
+          
           # Warte gezielt auf den Operator (wichtigster Teil)
           echo "⏳ Waiting for operator to be ready..."
           kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || {
@@ -485,24 +494,34 @@ jobs:
           echo "📊 Current pod status:"
           kubectl get pods -n monitoring -o wide || true
 
-      - name: Patch ServiceAccounts after deployment
+      - name: Patch ServiceAccounts after deployment and restart failed jobs
         shell: bash
         run: |
           set -euo pipefail
           echo "🔐 Patching all ServiceAccounts in monitoring namespace with ACR pull secret..."
-          # Patch alle ServiceAccounts, die Helm erstellt hat
+          # Patch alle ServiceAccounts, die Helm erstellt hat (falls noch nicht gepatcht)
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
             echo "Patching ServiceAccount: $sa"
             kubectl patch serviceaccount "$sa" -n monitoring \
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           done
           
+          # Warte kurz, damit Patch angewendet ist
+          sleep 2
+          
           # Restart Jobs/Pods, die ImagePullBackOff haben
-          echo "🔄 Restarting failed pods/jobs..."
+          echo "🔄 Restarting failed admission jobs..."
           for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep admission); do
             echo "Deleting job to trigger restart: $job"
             kubectl delete "$job" -n monitoring --ignore-not-found=true || true
           done
+          
+          # Warte kurz, damit neue Jobs gestartet werden
+          sleep 5
+          
+          # Zeige Status der Jobs
+          echo "📊 Admission job status:"
+          kubectl get jobs -n monitoring | grep admission || true
 
       - name: Summary
         shell: bash
