@@ -456,11 +456,13 @@ jobs:
           
           # Bereinige alte fehlgeschlagene Admission-Jobs
           echo "🧹 Cleaning up old failed admission jobs..."
-          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-          kubectl delete pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --field-selector=status.phase!=Running --ignore-not-found=true || true
+          # Lösche Jobs (auch Terminating) - force delete für hängende Jobs
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
+          # Lösche Pods direkt (auch Terminating) - wichtig, da Pods manchmal hängen bleiben
+          kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook -o name 2>/dev/null | xargs -r kubectl delete -n monitoring --grace-period=0 --force --ignore-not-found=true || true
           
-          # Warte kurz, damit Cleanup abgeschlossen ist
-          sleep 2
+          # Warte länger, damit Cleanup abgeschlossen ist
+          sleep 5
           
           # Deploy asynchron (ohne --wait, damit Workflow nicht hängt)
           echo "🚀 Deploying monitoring stack (asynchron)..."
