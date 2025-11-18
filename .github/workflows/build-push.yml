@@ -506,22 +506,86 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
-          # Patch ServiceAccounts SOFORT nach Deployment (bevor Jobs starten)
-          echo "🔐 Patching ServiceAccounts immediately after deployment..."
-          sleep 3  # Kurz warten, damit ServiceAccounts erstellt sind
-          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+          # Prüfe ob Ressourcen erstellt wurden (falls nicht, ist Helm stuck)
+          echo "🔍 Checking if resources were created..."
+          sleep 5  # Kurz warten, damit Helm Ressourcen erstellt hat
+          
+          OPERATOR_EXISTS=$(kubectl get deployment kube-prometheus-stack-operator -n monitoring -o name 2>/dev/null || echo "")
+          if [ -z "$OPERATOR_EXISTS" ]; then
+            echo "⚠️ Operator deployment not found! Helm may be stuck. Checking status..."
+            echo "📊 Current resources in monitoring namespace:"
+            kubectl get all -n monitoring || true
+            echo "📊 Current jobs:"
+            kubectl get jobs -n monitoring || true
+            
+            # Prüfe ob fehlgeschlagene Admission-Jobs das Deployment blockieren
+            FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$FAILED_JOBS" ]; then
+              echo "🔧 Found failed jobs blocking deployment. Cleaning up..."
+              kubectl delete jobs -n monitoring --all --ignore-not-found=true || true
+              sleep 5
+            fi
+            
+            # Versuche nochmal zu warten (manchmal dauert es etwas länger)
+            echo "⏳ Waiting additional 30s for resources to be created..."
+            sleep 30
+            
+            OPERATOR_EXISTS=$(kubectl get deployment kube-prometheus-stack-operator -n monitoring -o name 2>/dev/null || echo "")
+            if [ -z "$OPERATOR_EXISTS" ]; then
+              echo "❌ Operator still not found after cleanup. Helm deployment may have failed."
+              echo "📊 Current state:"
+              kubectl get all -n monitoring || true
+              echo "⚠️ Continuing anyway - resources may be created later..."
+            fi
+          fi
+          
+          # Warte gezielt auf den Operator (wichtigster Teil) - mit Retry-Logik
+          echo "⏳ Waiting for operator to be ready..."
+          MAX_RETRIES=12  # 12 * 10s = 2 Minuten
+          RETRY_COUNT=0
+          OPERATOR_READY=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=10s 2>/dev/null; then
+              OPERATOR_READY=true
+              echo "✅ Operator is ready!"
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "⏳ Operator not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+            sleep 10
+          done
+          
+          if [ "$OPERATOR_READY" = false ]; then
+            echo "⚠️ Operator rollout status check failed or timed out"
+            echo "📊 Checking operator pod status:"
+            kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
+            echo "⚠️ Continuing anyway - will patch ServiceAccounts and restart jobs..."
+          fi
+          
+          # Patch ServiceAccounts NACH Operator-Start (aber bevor Jobs fehlschlagen)
+          echo "🔐 Patching ServiceAccounts after operator is ready..."
+          sleep 2  # Kurz warten, damit alle ServiceAccounts erstellt sind
+          
+          # Warte bis ServiceAccounts existieren (mit Retry)
+          MAX_SA_RETRIES=10
+          SA_RETRY_COUNT=0
+          while [ $SA_RETRY_COUNT -lt $MAX_SA_RETRIES ]; do
+            SERVICE_ACCOUNTS=$(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | grep -v "default" | wc -l || echo "0")
+            if [ "$SERVICE_ACCOUNTS" -gt "0" ]; then
+              echo "✅ Found $SERVICE_ACCOUNTS ServiceAccounts to patch"
+              break
+            fi
+            SA_RETRY_COUNT=$((SA_RETRY_COUNT + 1))
+            echo "⏳ Waiting for ServiceAccounts to be created ($SA_RETRY_COUNT/$MAX_SA_RETRIES)..."
+            sleep 3
+          done
+          
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
             echo "Patching ServiceAccount: $sa"
             kubectl patch serviceaccount "$sa" -n monitoring \
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           done
-          
-          # Warte gezielt auf den Operator (wichtigster Teil)
-          echo "⏳ Waiting for operator to be ready..."
-          kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=5m || {
-            echo "⚠️ Operator rollout status check failed or timed out"
-            echo "📊 Checking operator pod status:"
-            kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
-          }
           
           # Zeige Status aller Pods
           echo "📊 Current pod status:"
@@ -532,29 +596,55 @@ jobs:
         run: |
           set -euo pipefail
           echo "🔐 Patching all ServiceAccounts in monitoring namespace with ACR pull secret..."
+          
           # Patch alle ServiceAccounts, die Helm erstellt hat (falls noch nicht gepatcht)
-          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+          PATCHED_COUNT=0
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
             echo "Patching ServiceAccount: $sa"
-            kubectl patch serviceaccount "$sa" -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+            if kubectl patch serviceaccount "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
+              PATCHED_COUNT=$((PATCHED_COUNT + 1))
+            fi
           done
+          echo "✅ Patched $PATCHED_COUNT ServiceAccounts"
           
           # Warte kurz, damit Patch angewendet ist
-          sleep 2
+          sleep 3
           
-          # Restart Jobs/Pods, die ImagePullBackOff haben
-          echo "🔄 Restarting failed admission jobs..."
-          for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep admission); do
-            echo "Deleting job to trigger restart: $job"
-            kubectl delete "$job" -n monitoring --ignore-not-found=true || true
-          done
+          # Prüfe ob fehlgeschlagene Jobs existieren
+          echo "🔍 Checking for failed jobs..."
+          FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
+          IMAGEPULL_JOBS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.labels.job-name}' 2>/dev/null | tr ' ' '\n' | sort -u || echo "")
           
-          # Warte kurz, damit neue Jobs gestartet werden
-          sleep 5
+          # Restart Jobs/Pods, die ImagePullBackOff haben oder fehlgeschlagen sind
+          if [ -n "$FAILED_JOBS" ] || [ -n "$IMAGEPULL_JOBS" ]; then
+            echo "🔄 Restarting failed admission jobs..."
+            
+            # Lösche alle Admission-Jobs (werden automatisch neu erstellt)
+            for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep -E "(admission|webhook)"); do
+              echo "Deleting job to trigger restart: $job"
+              kubectl delete "$job" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
+            done
+            
+            # Lösche auch Pods die ImagePullBackOff haben
+            for pod in $(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null); do
+              echo "Deleting pod with ImagePullBackOff: $pod"
+              kubectl delete pod "$pod" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
+            done
+            
+            # Warte kurz, damit neue Jobs gestartet werden
+            sleep 5
+            
+            # Zeige Status der Jobs
+            echo "📊 Admission job status after restart:"
+            kubectl get jobs -n monitoring | grep -E "(admission|webhook)" || echo "No admission jobs found"
+          else
+            echo "✅ No failed jobs found - all jobs are healthy"
+          fi
           
-          # Zeige Status der Jobs
-          echo "📊 Admission job status:"
-          kubectl get jobs -n monitoring | grep admission || true
+          # Finaler Status-Check
+          echo "📊 Final pod status:"
+          kubectl get pods -n monitoring -o wide || true
 
       - name: Summary
         shell: bash
