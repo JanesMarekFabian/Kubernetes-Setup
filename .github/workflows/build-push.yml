@@ -506,9 +506,54 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
+          # KRITISCH: Patch ServiceAccounts SOFORT nach Helm-Deployment (bevor Jobs starten!)
+          echo "🔐 CRITICAL: Patching ServiceAccounts IMMEDIATELY after Helm deployment..."
+          echo "⚠️ This must happen BEFORE admission jobs start, otherwise they will fail with ImagePullBackOff"
+          
+          # Warte bis ServiceAccounts existieren (mit Retry) - aber nicht zu lange!
+          MAX_SA_RETRIES=15  # 15 * 2s = 30 Sekunden max
+          SA_RETRY_COUNT=0
+          SERVICE_ACCOUNTS_FOUND=false
+          
+          while [ $SA_RETRY_COUNT -lt $MAX_SA_RETRIES ]; do
+            SERVICE_ACCOUNTS=$(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | grep -v "default" | wc -l || echo "0")
+            if [ "$SERVICE_ACCOUNTS" -gt "0" ]; then
+              SERVICE_ACCOUNTS_FOUND=true
+              echo "✅ Found $SERVICE_ACCOUNTS ServiceAccounts to patch"
+              break
+            fi
+            SA_RETRY_COUNT=$((SA_RETRY_COUNT + 1))
+            echo "⏳ Waiting for ServiceAccounts to be created ($SA_RETRY_COUNT/$MAX_SA_RETRIES)..."
+            sleep 2  # Kurzere Intervalle für schnelleres Patching
+          done
+          
+          if [ "$SERVICE_ACCOUNTS_FOUND" = true ]; then
+            # Patch alle ServiceAccounts SOFORT
+            PATCHED_COUNT=0
+            for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
+              echo "🔐 Patching ServiceAccount: $sa"
+              if kubectl patch serviceaccount "$sa" -n monitoring \
+                -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
+                PATCHED_COUNT=$((PATCHED_COUNT + 1))
+                echo "  ✅ Patched $sa"
+              else
+                echo "  ⚠️ Failed to patch $sa (may not exist yet)"
+              fi
+            done
+            echo "✅ Patched $PATCHED_COUNT ServiceAccounts"
+          else
+            echo "⚠️ No ServiceAccounts found after waiting - they may be created later"
+          fi
+          
+          # Lösche bereits laufende Admission-Jobs, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+          echo "🔄 Deleting any existing admission jobs to trigger restart with patched ServiceAccounts..."
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+          sleep 3  # Kurz warten, damit Jobs gelöscht sind
+          
           # Prüfe ob Ressourcen erstellt wurden (falls nicht, ist Helm stuck)
           echo "🔍 Checking if resources were created..."
-          sleep 5  # Kurz warten, damit Helm Ressourcen erstellt hat
+          sleep 2  # Kurz warten, damit Helm Ressourcen erstellt hat
           
           OPERATOR_EXISTS=$(kubectl get deployment kube-prometheus-stack-operator -n monitoring -o name 2>/dev/null || echo "")
           if [ -z "$OPERATOR_EXISTS" ]; then
@@ -560,29 +605,14 @@ jobs:
             echo "⚠️ Operator rollout status check failed or timed out"
             echo "📊 Checking operator pod status:"
             kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
-            echo "⚠️ Continuing anyway - will patch ServiceAccounts and restart jobs..."
+            echo "⚠️ Continuing anyway - ServiceAccounts are already patched..."
           fi
           
-          # Patch ServiceAccounts NACH Operator-Start (aber bevor Jobs fehlschlagen)
-          echo "🔐 Patching ServiceAccounts after operator is ready..."
-          sleep 2  # Kurz warten, damit alle ServiceAccounts erstellt sind
-          
-          # Warte bis ServiceAccounts existieren (mit Retry)
-          MAX_SA_RETRIES=10
-          SA_RETRY_COUNT=0
-          while [ $SA_RETRY_COUNT -lt $MAX_SA_RETRIES ]; do
-            SERVICE_ACCOUNTS=$(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | grep -v "default" | wc -l || echo "0")
-            if [ "$SERVICE_ACCOUNTS" -gt "0" ]; then
-              echo "✅ Found $SERVICE_ACCOUNTS ServiceAccounts to patch"
-              break
-            fi
-            SA_RETRY_COUNT=$((SA_RETRY_COUNT + 1))
-            echo "⏳ Waiting for ServiceAccounts to be created ($SA_RETRY_COUNT/$MAX_SA_RETRIES)..."
-            sleep 3
-          done
-          
+          # Patch ServiceAccounts nochmal (falls neue erstellt wurden)
+          echo "🔐 Re-patching ServiceAccounts (in case new ones were created)..."
+          sleep 2
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-            echo "Patching ServiceAccount: $sa"
+            echo "Re-patching ServiceAccount: $sa"
             kubectl patch serviceaccount "$sa" -n monitoring \
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           done
