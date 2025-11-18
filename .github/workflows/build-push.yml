@@ -467,23 +467,37 @@ jobs:
           # Deploy asynchron (ohne --wait, damit Workflow nicht hängt)
           echo "🚀 Deploying monitoring stack (asynchron)..."
           
-          # Aggressives Cleanup für stuck Helm-Releases
-          if helm list -n monitoring 2>/dev/null | grep -q kube-prometheus-stack; then
-            echo "⚠️ Helm release exists, checking for stuck operations..."
-            # Versuche normale Uninstall (mit --no-hooks um Hooks zu überspringen)
-            helm uninstall kube-prometheus-stack -n monitoring --no-hooks --ignore-not-found=true 2>/dev/null || true
-            # Falls das fehlschlägt, lösche alle Helm-Secrets und ConfigMaps die den Lock verursachen
-            echo "🔧 Force cleaning Helm locks..."
-            # Lösche Helm-Secrets (Release-Metadaten)
-            kubectl delete secret -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
-            # Lösche auch Secrets die den Release-Namen enthalten (für verschiedene Helm-Versionen)
-            kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "(sh.helm.release|helm-secret)" | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
-            # Lösche ConfigMaps die Helm-Locks enthalten können
-            kubectl delete configmap -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
-            # Lösche auch ConfigMaps mit Release-Namen
-            kubectl get configmaps -n monitoring -o name 2>/dev/null | grep "kube-prometheus-stack" | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
-            sleep 10  # Länger warten damit Cleanup abgeschlossen ist
-          fi
+          # Aggressives Cleanup für stuck Helm-Releases (IMMER ausführen)
+          echo "🔧 Force cleaning Helm locks and stuck releases..."
+          
+          # Versuche normale Uninstall (mit --no-hooks um Hooks zu überspringen)
+          helm uninstall kube-prometheus-stack -n monitoring --no-hooks --ignore-not-found=true 2>/dev/null || true
+          
+          # Debug: Zeige alle Secrets im Namespace
+          echo "📋 Current secrets in monitoring namespace:"
+          kubectl get secrets -n monitoring -o name 2>/dev/null || true
+          
+          # Lösche ALLE Helm-Secrets die mit dem Release zu tun haben
+          echo "🗑️ Deleting Helm release secrets..."
+          # Helm 3 Format: sh.helm.release.v1.<release-name>.<revision>
+          kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "sh\.helm\.release\.v1\.kube-prometheus-stack\." | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
+          # Alternative Formate
+          kubectl get secrets -n monitoring -o name 2>/dev/null | grep -i "helm.*kube-prometheus-stack" | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
+          # Mit Labels
+          kubectl delete secret -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
+          kubectl delete secret -n monitoring -l name=kube-prometheus-stack --ignore-not-found=true || true
+          
+          # Lösche ConfigMaps
+          echo "🗑️ Deleting Helm release configmaps..."
+          kubectl delete configmap -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
+          kubectl get configmaps -n monitoring -o name 2>/dev/null | grep "kube-prometheus-stack" | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
+          
+          # Warte damit Cleanup abgeschlossen ist
+          sleep 10
+          
+          # Debug: Zeige ob noch Secrets vorhanden sind
+          echo "📋 Remaining secrets after cleanup:"
+          kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "(helm|kube-prometheus)" || echo "No Helm secrets found"
           
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
