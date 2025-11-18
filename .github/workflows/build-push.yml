@@ -506,50 +506,65 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
-          # KRITISCH: Patch ServiceAccounts SOFORT nach Helm-Deployment (bevor Jobs starten!)
-          echo "🔐 CRITICAL: Patching ServiceAccounts IMMEDIATELY after Helm deployment..."
-          echo "⚠️ This must happen BEFORE admission jobs start, otherwise they will fail with ImagePullBackOff"
+          # KRITISCH: Kontinuierliches Patchen von ServiceAccounts nach Helm-Deployment
+          echo "🔐 CRITICAL: Continuously patching ServiceAccounts after Helm deployment..."
+          echo "⚠️ This ensures ALL ServiceAccounts get patched, even if created later"
           
-          # Warte bis ServiceAccounts existieren (mit Retry) - aber nicht zu lange!
-          MAX_SA_RETRIES=15  # 15 * 2s = 30 Sekunden max
-          SA_RETRY_COUNT=0
-          SERVICE_ACCOUNTS_FOUND=false
+          # Kontinuierliche Loop: Patch ServiceAccounts und lösche fehlgeschlagene Pods
+          MAX_ITERATIONS=20  # 20 * 5s = 100 Sekunden max
+          ITERATION=0
+          LAST_PATCHED_COUNT=0
           
-          while [ $SA_RETRY_COUNT -lt $MAX_SA_RETRIES ]; do
-            SERVICE_ACCOUNTS=$(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | grep -v "default" | wc -l || echo "0")
-            if [ "$SERVICE_ACCOUNTS" -gt "0" ]; then
-              SERVICE_ACCOUNTS_FOUND=true
-              echo "✅ Found $SERVICE_ACCOUNTS ServiceAccounts to patch"
-              break
-            fi
-            SA_RETRY_COUNT=$((SA_RETRY_COUNT + 1))
-            echo "⏳ Waiting for ServiceAccounts to be created ($SA_RETRY_COUNT/$MAX_SA_RETRIES)..."
-            sleep 2  # Kurzere Intervalle für schnelleres Patching
-          done
-          
-          if [ "$SERVICE_ACCOUNTS_FOUND" = true ]; then
-            # Patch alle ServiceAccounts SOFORT
+          while [ $ITERATION -lt $MAX_ITERATIONS ]; do
+            ITERATION=$((ITERATION + 1))
+            echo "🔄 Iteration $ITERATION/$MAX_ITERATIONS: Checking and patching ServiceAccounts..."
+            
+            # Patch ALLE ServiceAccounts (auch neu erstellte)
             PATCHED_COUNT=0
             for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-              echo "🔐 Patching ServiceAccount: $sa"
-              if kubectl patch serviceaccount "$sa" -n monitoring \
-                -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
-                PATCHED_COUNT=$((PATCHED_COUNT + 1))
-                echo "  ✅ Patched $sa"
-              else
-                echo "  ⚠️ Failed to patch $sa (may not exist yet)"
+              # Prüfe ob ServiceAccount bereits gepatcht ist
+              HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
+              if [ -z "$HAS_SECRET" ]; then
+                echo "  🔐 Patching ServiceAccount: $sa"
+                if kubectl patch serviceaccount "$sa" -n monitoring \
+                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
+                  PATCHED_COUNT=$((PATCHED_COUNT + 1))
+                  echo "    ✅ Patched $sa"
+                fi
               fi
             done
-            echo "✅ Patched $PATCHED_COUNT ServiceAccounts"
-          else
-            echo "⚠️ No ServiceAccounts found after waiting - they may be created later"
-          fi
+            
+            if [ $PATCHED_COUNT -gt 0 ]; then
+              echo "✅ Patched $PATCHED_COUNT new ServiceAccounts"
+              LAST_PATCHED_COUNT=$PATCHED_COUNT
+            fi
+            
+            # Lösche Pods mit ImagePullBackOff, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+            IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$IMAGEPULL_PODS" ]; then
+              echo "🗑️ Deleting pods with ImagePullBackOff to trigger restart..."
+              for pod in $IMAGEPULL_PODS; do
+                echo "  🗑️ Deleting pod: $pod"
+                kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+              done
+            fi
+            
+            # Lösche fehlgeschlagene Admission-Jobs
+            echo "🔄 Checking for admission jobs to delete..."
+            kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+            kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+            
+            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden und keine ImagePullBackOff Pods mehr existieren, können wir aufhören
+            if [ $PATCHED_COUNT -eq 0 ] && [ -z "$IMAGEPULL_PODS" ] && [ $ITERATION -gt 5 ]; then
+              echo "✅ No more ServiceAccounts to patch and no ImagePullBackOff pods - continuing..."
+              break
+            fi
+            
+            sleep 5  # Warte zwischen Iterationen
+          done
           
-          # Lösche bereits laufende Admission-Jobs, damit sie mit gepatchten ServiceAccounts neu erstellt werden
-          echo "🔄 Deleting any existing admission jobs to trigger restart with patched ServiceAccounts..."
-          kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-          sleep 3  # Kurz warten, damit Jobs gelöscht sind
+          echo "✅ Finished continuous ServiceAccount patching. Patched $LAST_PATCHED_COUNT ServiceAccounts in total."
+          sleep 3  # Kurz warten, damit alles angewendet ist
           
           # Prüfe ob Ressourcen erstellt wurden (falls nicht, ist Helm stuck)
           echo "🔍 Checking if resources were created..."
@@ -605,17 +620,8 @@ jobs:
             echo "⚠️ Operator rollout status check failed or timed out"
             echo "📊 Checking operator pod status:"
             kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
-            echo "⚠️ Continuing anyway - ServiceAccounts are already patched..."
+            echo "⚠️ Continuing anyway - ServiceAccounts are already patched in continuous loop..."
           fi
-          
-          # Patch ServiceAccounts nochmal (falls neue erstellt wurden)
-          echo "🔐 Re-patching ServiceAccounts (in case new ones were created)..."
-          sleep 2
-          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-            echo "Re-patching ServiceAccount: $sa"
-            kubectl patch serviceaccount "$sa" -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
-          done
           
           # Zeige Status aller Pods
           echo "📊 Current pod status:"
@@ -625,15 +631,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "🔐 Patching all ServiceAccounts in monitoring namespace with ACR pull secret..."
+          echo "🔐 Final patching of all ServiceAccounts and cleanup of failed pods..."
           
-          # Patch alle ServiceAccounts, die Helm erstellt hat (falls noch nicht gepatcht)
+          # Patch alle ServiceAccounts, die noch nicht gepatcht sind
           PATCHED_COUNT=0
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-            echo "Patching ServiceAccount: $sa"
-            if kubectl patch serviceaccount "$sa" -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
-              PATCHED_COUNT=$((PATCHED_COUNT + 1))
+            # Prüfe ob ServiceAccount bereits gepatcht ist
+            HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
+            if [ -z "$HAS_SECRET" ]; then
+              echo "🔐 Patching ServiceAccount: $sa"
+              if kubectl patch serviceaccount "$sa" -n monitoring \
+                -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
+                PATCHED_COUNT=$((PATCHED_COUNT + 1))
+                echo "  ✅ Patched $sa"
+              fi
+            else
+              echo "  ✓ ServiceAccount $sa already patched"
             fi
           done
           echo "✅ Patched $PATCHED_COUNT ServiceAccounts"
@@ -641,40 +654,44 @@ jobs:
           # Warte kurz, damit Patch angewendet ist
           sleep 3
           
-          # Prüfe ob fehlgeschlagene Jobs existieren
-          echo "🔍 Checking for failed jobs..."
+          # Prüfe ob fehlgeschlagene Jobs oder Pods existieren
+          echo "🔍 Checking for failed jobs and pods..."
           FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
-          IMAGEPULL_JOBS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.labels.job-name}' 2>/dev/null | tr ' ' '\n' | sort -u || echo "")
+          IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null || echo "")
           
           # Restart Jobs/Pods, die ImagePullBackOff haben oder fehlgeschlagen sind
-          if [ -n "$FAILED_JOBS" ] || [ -n "$IMAGEPULL_JOBS" ]; then
-            echo "🔄 Restarting failed admission jobs..."
+          if [ -n "$FAILED_JOBS" ] || [ -n "$IMAGEPULL_PODS" ]; then
+            echo "🔄 Restarting failed jobs and pods..."
             
             # Lösche alle Admission-Jobs (werden automatisch neu erstellt)
             for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep -E "(admission|webhook)"); do
-              echo "Deleting job to trigger restart: $job"
+              echo "  🗑️ Deleting job: $job"
               kubectl delete "$job" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
             done
             
-            # Lösche auch Pods die ImagePullBackOff haben
-            for pod in $(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null); do
-              echo "Deleting pod with ImagePullBackOff: $pod"
+            # Lösche auch alle Pods die ImagePullBackOff haben (nicht nur Jobs)
+            for pod in $IMAGEPULL_PODS; do
+              echo "  🗑️ Deleting pod with ImagePullBackOff: $pod"
               kubectl delete pod "$pod" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
             done
             
-            # Warte kurz, damit neue Jobs gestartet werden
+            # Warte kurz, damit neue Jobs/Pods gestartet werden
             sleep 5
             
             # Zeige Status der Jobs
-            echo "📊 Admission job status after restart:"
+            echo "📊 Job status after restart:"
             kubectl get jobs -n monitoring | grep -E "(admission|webhook)" || echo "No admission jobs found"
           else
-            echo "✅ No failed jobs found - all jobs are healthy"
+            echo "✅ No failed jobs or ImagePullBackOff pods found - all resources are healthy"
           fi
           
           # Finaler Status-Check
           echo "📊 Final pod status:"
           kubectl get pods -n monitoring -o wide || true
+          
+          # Zeige ServiceAccounts Status
+          echo "📊 ServiceAccounts with imagePullSecrets:"
+          kubectl get serviceaccounts -n monitoring -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.imagePullSecrets[*].name}{"\n"}{end}' || true
 
       - name: Summary
         shell: bash
