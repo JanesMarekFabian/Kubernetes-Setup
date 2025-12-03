@@ -1042,6 +1042,117 @@ jobs:
           echo "📊 ServiceAccounts with imagePullSecrets:"
           kubectl get serviceaccounts -n monitoring -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.imagePullSecrets[*].name}{"\n"}{end}' || true
 
+      - name: Collect debug logs from failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔍 Collecting debug logs from failed resources..."
+          
+          # 1. Sammle Logs von fehlgeschlagenen Pods
+          echo "📋 Collecting logs from failed/error pods..."
+          ERROR_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Failed" || @.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull" || @.status.containerStatuses[0].state.terminated.reason=="Error" || @.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff")].metadata.name}' 2>/dev/null || echo "")
+          
+          if [ -n "$ERROR_PODS" ]; then
+            for pod in $ERROR_PODS; do
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🐛 DEBUG: Pod $pod"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              
+              # Zeige Pod Details
+              echo "📋 Pod Details:"
+              kubectl get pod "$pod" -n monitoring -o wide || true
+              
+              # Zeige Pod Events
+              echo ""
+              echo "📋 Pod Events:"
+              kubectl describe pod "$pod" -n monitoring | grep -A 20 "Events:" || true
+              
+              # Zeige Container Images
+              echo ""
+              echo "📦 Container Images:"
+              kubectl get pod "$pod" -n monitoring -o jsonpath='{range .spec.containers[*]}{.name}{": "}{.image}{"\n"}{end}' || true
+              kubectl get pod "$pod" -n monitoring -o jsonpath='{range .spec.initContainers[*]}{.name}{" (init): "}{.image}{"\n"}{end}' || true
+              
+              # Zeige ServiceAccount und ImagePullSecrets
+              echo ""
+              echo "🔐 ServiceAccount Info:"
+              SA=$(kubectl get pod "$pod" -n monitoring -o jsonpath='{.spec.serviceAccountName}' 2>/dev/null || echo "N/A")
+              echo "  ServiceAccount: $SA"
+              IPS=$(kubectl get pod "$pod" -n monitoring -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "none")
+              echo "  ImagePullSecrets: $IPS"
+              if [ "$SA" != "N/A" ] && [ "$SA" != "default" ]; then
+                SA_IPS=$(kubectl get serviceaccount "$SA" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "none")
+                echo "  ServiceAccount ImagePullSecrets: $SA_IPS"
+              fi
+              
+              # Versuche Logs zu sammeln (falls Container gestartet wurden)
+              echo ""
+              echo "📋 Container Logs (if available):"
+              for container in $(kubectl get pod "$pod" -n monitoring -o jsonpath='{.spec.containers[*].name}' 2>/dev/null); do
+                echo "  Container: $container"
+                kubectl logs "$pod" -n monitoring -c "$container" --tail=50 2>&1 || echo "    (logs not available)"
+              done
+              
+              # Zeige Image Pull Error Details
+              echo ""
+              echo "🔍 Image Pull Status:"
+              kubectl get pod "$pod" -n monitoring -o jsonpath='{range .status.containerStatuses[*]}{.name}{": "}{.state.waiting.reason}{" - "}{.state.waiting.message}{"\n"}{end}' || true
+              kubectl get pod "$pod" -n monitoring -o jsonpath='{range .status.containerStatuses[*]}{.name}{": "}{.state.terminated.reason}{" - "}{.state.terminated.message}{"\n"}{end}' || true
+            done
+          else
+            echo "✅ No failed pods found"
+          fi
+          
+          # 2. Sammle Logs von fehlgeschlagenen Jobs
+          echo ""
+          echo "📋 Collecting logs from failed jobs..."
+          FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
+          
+          if [ -n "$FAILED_JOBS" ]; then
+            for job in $FAILED_JOBS; do
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🐛 DEBUG: Job $job"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              
+              # Zeige Job Details
+              echo "📋 Job Details:"
+              kubectl get job "$job" -n monitoring -o wide || true
+              kubectl describe job "$job" -n monitoring || true
+              
+              # Zeige Job Pod Logs
+              echo ""
+              echo "📋 Job Pod Logs:"
+              JOB_PODS=$(kubectl get pods -n monitoring -l job-name="$job" -o name 2>/dev/null || echo "")
+              if [ -n "$JOB_PODS" ]; then
+                for pod in $JOB_PODS; do
+                  echo "  Pod: $pod"
+                  kubectl logs $pod -n monitoring --tail=100 2>&1 || echo "    (logs not available)"
+                done
+              else
+                echo "  (no pods found for this job)"
+              fi
+            done
+          else
+            echo "✅ No failed jobs found"
+          fi
+          
+          # 3. Zeige Terminating Pods (für Info)
+          echo ""
+          echo "📋 Terminating pods (will be cleaned up):"
+          TERMINATING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$TERMINATING_PODS" ]; then
+            for pod in $TERMINATING_PODS; do
+              echo "  ⏳ $pod (Terminating since: $(kubectl get pod "$pod" -n monitoring -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || echo "unknown"))"
+            done
+          else
+            echo "  ✅ No terminating pods"
+          fi
+          
+          echo ""
+          echo "✅ Debug log collection completed"
+
       - name: Cleanup failed resources
         shell: bash
         run: |
