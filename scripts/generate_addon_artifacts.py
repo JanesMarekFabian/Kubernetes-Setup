@@ -103,6 +103,9 @@ def rewrite_observability(acr_registry: str, data: Dict) -> None:
             if "repository" in node and node["repository"]:
                 # Normalize repository to remove registry prefix (keep only path)
                 node["repository"] = normalize_repo(str(node["repository"]).strip())
+                # FIX: Füge registry hinzu, auch wenn es nicht existiert oder leer ist
+                if "registry" not in node or not node["registry"]:
+                    node["registry"] = acr_registry
             if "registry" in node:
                 # Set registry to ACR instead of removing it
                 # This way Helm will use: ${registry}/${repository} = acr.io/jettech/kube-webhook-certgen

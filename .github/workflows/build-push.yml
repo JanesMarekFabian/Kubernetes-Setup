@@ -506,6 +506,41 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
+          # DEBUG: Prüfe welche Images die Pods verwenden
+          echo "🔍 DEBUG: Checking which images pods are trying to pull..."
+          sleep 5  # Warte kurz, damit Pods erstellt werden
+          for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null | head -5); do
+            echo "📦 Pod: $pod"
+            IMAGE=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "N/A")
+            echo "  Image: $IMAGE"
+            SA=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.serviceAccountName}' 2>/dev/null || echo "default")
+            echo "  ServiceAccount: $SA"
+            IPS=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "(none)")
+            echo "  ImagePullSecrets: $IPS"
+            echo "---"
+          done
+          
+          # DEBUG: Prüfe ob ServiceAccounts ImagePullSecrets haben
+          echo "🔍 DEBUG: Checking ServiceAccount ImagePullSecrets..."
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null); do
+            echo "📋 $sa:"
+            IPS=$(kubectl get $sa -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "(none)")
+            echo "  ImagePullSecrets: $IPS"
+          done
+          
+          # DEBUG: Zeige erwartete ACR Image-Pfade
+          echo "🔍 DEBUG: Expected ACR image paths (should match pod images above):"
+          if [ -n "${ACR_REGISTRY:-}" ]; then
+            echo "ACR Registry: $ACR_REGISTRY"
+            echo "Expected images:"
+            echo "  - ${ACR_REGISTRY}/grafana/grafana:10.2.0"
+            echo "  - ${ACR_REGISTRY}/prometheus/prometheus:v2.48.0"
+            echo "  - ${ACR_REGISTRY}/prometheus-operator/prometheus-operator:v0.86.2"
+            echo "  - ${ACR_REGISTRY}/jettech/kube-webhook-certgen:v1.5.1"
+            echo "  - ${ACR_REGISTRY}/prometheus/node-exporter:v1.10.2"
+            echo "  - ${ACR_REGISTRY}/kube-state-metrics/kube-state-metrics:v2.10.1"
+          fi
+          
           # KRITISCH: Prüfe ob Helm Release existiert, falls nicht erstelle ServiceAccounts manuell
           echo "🔍 Checking if Helm release exists..."
           HELM_RELEASE_EXISTS=$(helm list -n monitoring -q 2>/dev/null | grep -q "kube-prometheus-stack" && echo "true" || echo "false")
