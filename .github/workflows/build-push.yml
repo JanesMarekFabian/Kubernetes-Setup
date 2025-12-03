@@ -499,6 +499,38 @@ jobs:
           echo "📋 Remaining secrets after cleanup:"
           kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "(helm|kube-prometheus)" || echo "No Helm secrets found"
           
+          # KRITISCH: Erstelle und patche admission ServiceAccount VOR Helm-Deployment
+          # Helm Hooks (post-install) erstellen Jobs, die sofort laufen und ImagePullSecrets benötigen
+          echo "🔐 Creating and patching admission ServiceAccount BEFORE Helm deployment..."
+          if ! kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring 2>/dev/null; then
+            echo "  Creating kube-prometheus-stack-admission ServiceAccount..."
+            kubectl create serviceaccount kube-prometheus-stack-admission -n monitoring || true
+            kubectl label serviceaccount kube-prometheus-stack-admission -n monitoring \
+              app.kubernetes.io/name=kube-prometheus-stack \
+              app.kubernetes.io/component=prometheus-operator-webhook \
+              app.kubernetes.io/managed-by=Helm --overwrite || true
+            kubectl annotate serviceaccount kube-prometheus-stack-admission -n monitoring \
+              helm.sh/hook=pre-install,pre-upgrade,post-install,post-upgrade --overwrite || true
+          fi
+          # Patch den ServiceAccount mit imagePullSecrets
+          echo "  Patching kube-prometheus-stack-admission ServiceAccount with acr-pull..."
+          kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          
+          # Verifiziere dass der ServiceAccount gepatcht ist
+          ADMISSION_IPS=$(kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+          if [[ "$ADMISSION_IPS" == *"acr-pull"* ]]; then
+            echo "  ✅ Admission ServiceAccount is patched: $ADMISSION_IPS"
+          else
+            echo "  ⚠️ Warning: Admission ServiceAccount may not be patched correctly"
+            # Versuche nochmal mit JSON Patch (falls bereits ImagePullSecrets vorhanden sind)
+            kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
+              --type='json' \
+              -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || \
+            kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          fi
+          
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
