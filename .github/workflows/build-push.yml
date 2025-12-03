@@ -593,18 +593,27 @@ jobs:
             kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' --ignore-not-found=true || true
             
-            # Patch ALLE ServiceAccounts (auch neu erstellte)
+            # Patch ALLE ServiceAccounts (auch neu erstellte) - INKLUSIVE default
             PATCHED_COUNT=0
-            for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-              # Prüfe ob ServiceAccount bereits gepatcht ist
+            for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+              # Prüfe ob ServiceAccount bereits acr-pull als ImagePullSecret hat
               HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
               if [ -z "$HAS_SECRET" ]; then
                 echo "  🔐 Patching ServiceAccount: $sa"
-                if kubectl patch serviceaccount "$sa" -n monitoring \
-                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
-                  PATCHED_COUNT=$((PATCHED_COUNT + 1))
-                  echo "    ✅ Patched $sa"
+                # Hole aktuelle ImagePullSecrets (falls vorhanden)
+                CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+                if [ -n "$CURRENT_IPS" ]; then
+                  # Füge acr-pull zu bestehenden Secrets hinzu
+                  kubectl patch serviceaccount "$sa" -n monitoring \
+                    --type='json' \
+                    -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) && echo "    ✅ Patched $sa (added to existing)" || true
+                else
+                  # Erstelle neue ImagePullSecrets Liste
+                  kubectl patch serviceaccount "$sa" -n monitoring \
+                    -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) && echo "    ✅ Patched $sa (created new)" || true
                 fi
+              else
+                echo "  ✅ ServiceAccount $sa already has acr-pull"
               fi
             done
             
@@ -613,10 +622,10 @@ jobs:
               LAST_PATCHED_COUNT=$PATCHED_COUNT
             fi
             
-            # Lösche Pods mit ImagePullBackOff, damit sie mit gepatchten ServiceAccounts neu erstellt werden
-            IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null || echo "")
+            # Lösche Pods mit ImagePullBackOff oder ErrImagePull, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+            IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
             if [ -n "$IMAGEPULL_PODS" ]; then
-              echo "🗑️ Deleting pods with ImagePullBackOff to trigger restart..."
+              echo "🗑️ Deleting pods with ImagePullBackOff/ErrImagePull to trigger restart..."
               for pod in $IMAGEPULL_PODS; do
                 echo "  🗑️ Deleting pod: $pod"
                 kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
@@ -636,9 +645,9 @@ jobs:
               fi
             fi
             
-            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden und keine ImagePullBackOff Pods mehr existieren, können wir aufhören
+            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden und keine ImagePullBackOff/ErrImagePull Pods mehr existieren, können wir aufhören
             if [ $PATCHED_COUNT -eq 0 ] && [ -z "$IMAGEPULL_PODS" ] && [ $ITERATION -gt 5 ]; then
-              echo "✅ No more ServiceAccounts to patch and no ImagePullBackOff pods - continuing..."
+              echo "✅ No more ServiceAccounts to patch and no ImagePullBackOff/ErrImagePull pods - continuing..."
               break
             fi
             
@@ -715,17 +724,30 @@ jobs:
           set -euo pipefail
           echo "🔐 Final patching of all ServiceAccounts and cleanup of failed pods..."
           
-          # Patch alle ServiceAccounts, die noch nicht gepatcht sind
+          # Patch ALLE ServiceAccounts, die noch nicht gepatcht sind (INKLUSIVE default)
           PATCHED_COUNT=0
-          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2 | grep -v "^default$"); do
-            # Prüfe ob ServiceAccount bereits gepatcht ist
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            # Prüfe ob ServiceAccount bereits acr-pull als ImagePullSecret hat
             HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
             if [ -z "$HAS_SECRET" ]; then
               echo "🔐 Patching ServiceAccount: $sa"
-              if kubectl patch serviceaccount "$sa" -n monitoring \
-                -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
-                PATCHED_COUNT=$((PATCHED_COUNT + 1))
-                echo "  ✅ Patched $sa"
+              # Hole aktuelle ImagePullSecrets (falls vorhanden)
+              CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+              if [ -n "$CURRENT_IPS" ]; then
+                # Füge acr-pull zu bestehenden Secrets hinzu
+                if kubectl patch serviceaccount "$sa" -n monitoring \
+                  --type='json' \
+                  -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null; then
+                  PATCHED_COUNT=$((PATCHED_COUNT + 1))
+                  echo "  ✅ Patched $sa (added to existing)"
+                fi
+              else
+                # Erstelle neue ImagePullSecrets Liste
+                if kubectl patch serviceaccount "$sa" -n monitoring \
+                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null; then
+                  PATCHED_COUNT=$((PATCHED_COUNT + 1))
+                  echo "  ✅ Patched $sa (created new)"
+                fi
               fi
             else
               echo "  ✓ ServiceAccount $sa already patched"
@@ -739,9 +761,9 @@ jobs:
           # Prüfe ob fehlgeschlagene Jobs oder Pods existieren
           echo "🔍 Checking for failed jobs and pods..."
           FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
-          IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null || echo "")
+          IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
           
-          # Restart Jobs/Pods, die ImagePullBackOff haben oder fehlgeschlagen sind
+          # Restart Jobs/Pods, die ImagePullBackOff oder ErrImagePull haben oder fehlgeschlagen sind
           if [ -n "$FAILED_JOBS" ] || [ -n "$IMAGEPULL_PODS" ]; then
             echo "🔄 Restarting failed jobs and pods..."
             
@@ -751,10 +773,20 @@ jobs:
               kubectl delete "$job" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
             done
             
-            # Lösche auch alle Pods die ImagePullBackOff haben (nicht nur Jobs)
+            # Lösche auch alle Pods die ImagePullBackOff oder ErrImagePull haben (nicht nur Jobs)
             for pod in $IMAGEPULL_PODS; do
-              echo "  🗑️ Deleting pod with ImagePullBackOff: $pod"
+              echo "  🗑️ Deleting pod with ImagePullBackOff/ErrImagePull: $pod"
               kubectl delete pod "$pod" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
+            done
+            
+            # KRITISCH: Lösche ALLE Pods, die keine ImagePullSecrets haben (damit sie mit gepatchten ServiceAccounts neu erstellt werden)
+            echo "🔄 Checking for pods without ImagePullSecrets..."
+            for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
+              POD_IPS=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+              if [ -z "$POD_IPS" ]; then
+                echo "  🗑️ Deleting pod without ImagePullSecrets: $pod"
+                kubectl delete $pod -n monitoring --ignore-not-found=true --grace-period=0 --force || true
+              fi
             done
             
             # Warte kurz, damit neue Jobs/Pods gestartet werden
