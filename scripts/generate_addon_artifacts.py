@@ -135,11 +135,19 @@ def main() -> None:
     observability = load_yaml(OBSERVABILITY_VALUES)
     ingress = load_yaml(INGRESS_VALUES)
 
+    # Sammle Images aus Values-Dateien
     image_entries = list(collect_images(observability)) + list(collect_images(ingress))
     image_entries.extend(get_static_images())
 
+    # Schreibe initiale image-map.txt
     write_image_map(image_entries)
+    
+    # Generiere observability.acr.yaml (wird später im Workflow mit Helm Template erweitert)
     rewrite_observability(acr_registry, observability)
+    
+    print(f"✅ Generated {OUTPUT_IMAGE_MAP} and {OUTPUT_OBSERVABILITY_ACR}")
+    print(f"📦 Found {len(set(image_entries))} unique images in values files")
+    print(f"💡 Note: Workflow will extract additional images from Helm Chart defaults using 'helm template'")
 
 
 if __name__ == "__main__":

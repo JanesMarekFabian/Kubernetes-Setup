@@ -36,6 +36,15 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
+      - name: Setup Helm
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update prometheus-community
+
       - name: Generate mirror artifacts
         id: map
         run: |
@@ -43,6 +52,93 @@ jobs:
           "$VENV_PYTHON" scripts/generate_addon_artifacts.py
           echo "map-file=image-map.txt" >> "$GITHUB_OUTPUT"
           echo "values-file=infra/addons/values/observability.acr.yaml" >> "$GITHUB_OUTPUT"
+          
+          # KRITISCH: Extrahiere ALLE Images die Helm Chart tatsächlich verwenden wird (inkl. Defaults)
+          echo "🔍 Extracting all images from Helm Chart (including defaults)..."
+          
+          # Template das Chart mit unseren Values, um alle tatsächlich verwendeten Images zu sehen
+          if [ -f "infra/addons/values/observability.acr.yaml" ]; then
+            VALUES_FILE="infra/addons/values/observability.acr.yaml"
+          elif [ -f "infra/addons/values/observability.yaml" ]; then
+            VALUES_FILE="infra/addons/values/observability.yaml"
+          else
+            VALUES_FILE=""
+          fi
+          
+          if [ -n "$VALUES_FILE" ]; then
+            # Template das Chart (ohne es zu installieren)
+            HELM_TEMPLATE_OUTPUT=$(helm template kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+              -n monitoring \
+              -f "$VALUES_FILE" 2>/dev/null || echo "")
+            
+            if [ -n "$HELM_TEMPLATE_OUTPUT" ]; then
+              # Extrahiere alle Image-Referenzen aus dem gerenderten YAML
+              HELM_IMAGES=$(echo "$HELM_TEMPLATE_OUTPUT" | grep -E "^\s+image:" | sed 's/.*image:[[:space:]]*//' | sed 's/"//g' | sed "s/'//g" | sort -u || echo "")
+              
+              if [ -n "$HELM_IMAGES" ]; then
+                echo "📦 Found images from Helm template:"
+                echo "$HELM_IMAGES" | head -20
+                
+                # Füge fehlende Images zum image-map.txt hinzu
+                MISSING_COUNT=0
+                while IFS= read -r image; do
+                  [[ -z "$image" ]] && continue
+                  
+                  # Parse image (kann registry/repo:tag oder repo:tag sein)
+                  if [[ "$image" == *"/"* ]]; then
+                    # Hat Registry: registry/repo:tag
+                    REGISTRY=$(echo "$image" | cut -d'/' -f1)
+                    REPO_AND_TAG=$(echo "$image" | cut -d'/' -f2-)
+                  else
+                    # Keine Registry: repo:tag
+                    REGISTRY=""
+                    REPO_AND_TAG="$image"
+                  fi
+                  
+                  if [[ "$REPO_AND_TAG" == *":"* ]]; then
+                    REPO=$(echo "$REPO_AND_TAG" | cut -d':' -f1)
+                    TAG=$(echo "$REPO_AND_TAG" | cut -d':' -f2-)
+                  else
+                    REPO="$REPO_AND_TAG"
+                    TAG="latest"
+                  fi
+                  
+                  # Normalisiere Registry
+                  if [[ "$REGISTRY" == "docker.io" ]] || [[ "$REGISTRY" == "quay.io" ]] || [[ "$REGISTRY" == "registry.k8s.io" ]]; then
+                    SOURCE_REPO="${REGISTRY}/${REPO}"
+                    TARGET_REPO="$REPO"
+                  elif [ -z "$REGISTRY" ]; then
+                    SOURCE_REPO="docker.io/${REPO}"
+                    TARGET_REPO="$REPO"
+                  else
+                    # Bereits ACR oder andere Registry
+                    continue
+                  fi
+                  
+                  # Prüfe ob Image bereits im image-map.txt ist (flexibler Match)
+                  if ! grep -qE "^${SOURCE_REPO}\|.*\|${TAG}$|^.*\|${TARGET_REPO}\|${TAG}$" image-map.txt 2>/dev/null; then
+                    echo "${SOURCE_REPO}|${TARGET_REPO}|${TAG}" >> image-map.txt
+                    echo "  ➕ Added missing image: ${SOURCE_REPO}:${TAG} -> ${ACR_REGISTRY}/${TARGET_REPO}:${TAG}"
+                    MISSING_COUNT=$((MISSING_COUNT + 1))
+                  fi
+                done <<< "$HELM_IMAGES"
+                
+                if [ $MISSING_COUNT -gt 0 ]; then
+                  echo "✅ Added $MISSING_COUNT missing images from Helm Chart defaults to image-map.txt"
+                  echo "📋 Updated image-map.txt now contains:"
+                  wc -l image-map.txt || true
+                else
+                  echo "✅ All images from Helm Chart are already in image-map.txt"
+                fi
+              else
+                echo "⚠️ No images found in Helm template output"
+              fi
+            else
+              echo "⚠️ Helm template failed or returned empty output"
+            fi
+          else
+            echo "⚠️ Values file not found, skipping Helm template extraction"
+          fi
 
       - name: Mirror container images
         run: |
@@ -399,6 +495,24 @@ jobs:
             echo "✅ observability.acr.yaml copied to infra/addons/values/"
           else
             echo "⚠️ observability.acr.yaml not found, will be generated if needed"
+          fi
+          
+          # Validierung: Prüfe ob observability.acr.yaml alle Images auf ACR umschreibt
+          if [ -f "infra/addons/values/observability.acr.yaml" ]; then
+            echo "🔍 Validating observability.acr.yaml..."
+            # Prüfe ob noch quay.io oder docker.io Referenzen vorhanden sind (sollten nicht sein)
+            PUBLIC_REFS=$(grep -E "(quay\.io|docker\.io)" infra/addons/values/observability.acr.yaml | grep -v "^#" | grep -v "registry:" || echo "")
+            if [ -n "$PUBLIC_REFS" ]; then
+              echo "⚠️ Warning: Found public registry references in observability.acr.yaml:"
+              echo "$PUBLIC_REFS"
+              echo "⚠️ These should be rewritten to use ACR registry"
+            else
+              echo "✅ All image references appear to use ACR registry"
+            fi
+            
+            # Zeige ein paar Image-Referenzen zur Verifikation
+            echo "📋 Sample image references from observability.acr.yaml:"
+            grep -A 2 "repository:" infra/addons/values/observability.acr.yaml | head -10 || true
           fi
 
       - name: Setup CICD access
@@ -853,13 +967,171 @@ jobs:
             echo "✅ No failed jobs or ImagePullBackOff pods found - all resources are healthy"
           fi
           
+          # KRITISCH: Prüfe ob Pods noch von öffentlichen Registries ziehen und patche ServiceAccounts erneut
+          echo "🔍 Checking if pods are pulling from ACR or public registries..."
+          sleep 5  # Warte kurz, damit Pods erstellt sind
+          
+          # Finde Pods die noch von quay.io, docker.io oder anderen öffentlichen Registries ziehen
+          PUBLIC_REGISTRY_PODS=""
+          for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
+            # Prüfe alle Container im Pod (auch Init-Container)
+            CONTAINER_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[*].image}' 2>/dev/null || echo "")
+            INIT_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.initContainers[*].image}' 2>/dev/null || echo "")
+            ALL_IMAGES="$CONTAINER_IMAGES $INIT_IMAGES"
+            
+            for image in $ALL_IMAGES; do
+              if [[ "$image" == quay.io/* ]] || [[ "$image" == docker.io/* ]] || [[ "$image" == registry.k8s.io/* ]]; then
+                if [[ "$PUBLIC_REGISTRY_PODS" != *"$pod"* ]]; then
+                  if [ -z "$PUBLIC_REGISTRY_PODS" ]; then
+                    PUBLIC_REGISTRY_PODS="$pod"
+                  else
+                    PUBLIC_REGISTRY_PODS="$PUBLIC_REGISTRY_PODS $pod"
+                  fi
+                  echo "  ⚠️ Pod $pod is pulling from public registry: $image"
+                fi
+              fi
+            done
+          done
+          
+          # Wenn Pods noch von öffentlichen Registries ziehen, patche alle ServiceAccounts erneut
+          if [ -n "$PUBLIC_REGISTRY_PODS" ]; then
+            echo "⚠️ Found pods pulling from public registries. Patching all ServiceAccounts again..."
+            PATCHED_AGAIN=0
+            for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+              HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
+              if [ -z "$HAS_SECRET" ]; then
+                echo "  🔐 Patching ServiceAccount: $sa"
+                CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+                if [ -n "$CURRENT_IPS" ]; then
+                  kubectl patch serviceaccount "$sa" -n monitoring \
+                    --type='json' \
+                    -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null && PATCHED_AGAIN=$((PATCHED_AGAIN + 1)) || true
+                else
+                  kubectl patch serviceaccount "$sa" -n monitoring \
+                    -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null && PATCHED_AGAIN=$((PATCHED_AGAIN + 1)) || true
+                fi
+              fi
+            done
+            echo "✅ Repatched $PATCHED_AGAIN ServiceAccounts"
+            
+            # Lösche Pods die von öffentlichen Registries ziehen, damit sie neu erstellt werden
+            echo "🗑️ Deleting pods pulling from public registries..."
+            for pod in $PUBLIC_REGISTRY_PODS; do
+              echo "  🗑️ Deleting pod: $pod"
+              kubectl delete $pod -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+            
+            echo "⏳ Waiting for pods to be recreated..."
+            sleep 10
+          else
+            echo "✅ All pods are pulling from ACR"
+          fi
+          
           # Finaler Status-Check
           echo "📊 Final pod status:"
           kubectl get pods -n monitoring -o wide || true
           
+          # Zeige welche Images die Pods verwenden
+          echo "📦 Pod images (should all be from ACR):"
+          for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null | head -10); do
+            IMAGE=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "N/A")
+            echo "  $pod: $IMAGE"
+          done
+          
           # Zeige ServiceAccounts Status
           echo "📊 ServiceAccounts with imagePullSecrets:"
           kubectl get serviceaccounts -n monitoring -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.imagePullSecrets[*].name}{"\n"}{end}' || true
+
+      - name: Cleanup failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🧹 Cleaning up failed and terminated resources..."
+          
+          # 1. Lösche alle Terminating Pods
+          echo "🗑️ Cleaning up Terminating pods..."
+          TERMINATING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$TERMINATING_PODS" ]; then
+            for pod in $TERMINATING_PODS; do
+              echo "  🗑️ Force deleting terminating pod: $pod"
+              kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+          fi
+          
+          # 2. Lösche alle Pods mit Error/ImagePullBackOff/ErrImagePull Status
+          echo "🗑️ Cleaning up pods with Error/ImagePullBackOff/ErrImagePull status..."
+          ERROR_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Failed" || @.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull" || @.status.containerStatuses[0].state.terminated.reason=="Error")].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$ERROR_PODS" ]; then
+            for pod in $ERROR_PODS; do
+              echo "  🗑️ Deleting error pod: $pod"
+              kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+          fi
+          
+          # 3. Lösche alle fehlgeschlagenen Jobs
+          echo "🗑️ Cleaning up failed jobs..."
+          FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$FAILED_JOBS" ]; then
+            for job in $FAILED_JOBS; do
+              echo "  🗑️ Deleting failed job: $job"
+              kubectl delete job "$job" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+          fi
+          
+          # 4. Lösche alle Completed Jobs (die nicht mehr benötigt werden, besonders admission/webhook)
+          echo "🗑️ Cleaning up completed admission/webhook jobs..."
+          for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep -E "(admission|webhook|patch)"); do
+            JOB_STATUS=$(kubectl get $job -n monitoring -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
+            if [ "$JOB_STATUS" = "True" ]; then
+              echo "  🗑️ Deleting completed job: $job"
+              kubectl delete $job -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            fi
+          done
+          
+          # 5. Lösche alle Pods im CrashLoopBackOff Status
+          echo "🗑️ Cleaning up CrashLoopBackOff pods..."
+          CRASHLOOP_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff")].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$CRASHLOOP_PODS" ]; then
+            for pod in $CRASHLOOP_PODS; do
+              echo "  🗑️ Deleting CrashLoopBackOff pod: $pod"
+              kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+          fi
+          
+          # 6. Lösche alle Pending Pods die länger als 5 Minuten warten (wahrscheinlich hängend)
+          echo "🗑️ Cleaning up stuck pending pods..."
+          PENDING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Pending")].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$PENDING_PODS" ]; then
+            for pod in $PENDING_PODS; do
+              POD_AGE=$(kubectl get pod "$pod" -n monitoring -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
+              if [ -n "$POD_AGE" ]; then
+                # Prüfe ob Pod älter als 5 Minuten ist (vereinfacht - prüft nur ob er existiert)
+                echo "  🗑️ Deleting pending pod (may be stuck): $pod"
+                kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+              fi
+            done
+          fi
+          
+          # 7. Warte kurz, damit Cleanup abgeschlossen ist
+          sleep 5
+          
+          # 8. Finale Status-Anzeige
+          echo "📊 Final cleanup status:"
+          TERMINATING_COUNT=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null | wc -w || echo 0)
+          ERROR_COUNT=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Failed")].metadata.name}' 2>/dev/null | wc -w || echo 0)
+          IMAGEPULL_COUNT=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff")].metadata.name}' 2>/dev/null | wc -w || echo 0)
+          FAILED_JOBS_COUNT=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null | wc -w || echo 0)
+          
+          echo "  Terminating pods: $TERMINATING_COUNT"
+          echo "  Error pods: $ERROR_COUNT"
+          echo "  ImagePullBackOff pods: $IMAGEPULL_COUNT"
+          echo "  Failed jobs: $FAILED_JOBS_COUNT"
+          
+          if [ "$TERMINATING_COUNT" -eq 0 ] && [ "$ERROR_COUNT" -eq 0 ] && [ "$IMAGEPULL_COUNT" -eq 0 ] && [ "$FAILED_JOBS_COUNT" -eq 0 ]; then
+            echo "✅ All cleanup completed - workspace is clean!"
+          else
+            echo "⚠️ Some resources may still need cleanup"
+          fi
 
       - name: Summary
         shell: bash
