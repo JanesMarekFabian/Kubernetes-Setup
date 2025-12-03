@@ -538,6 +538,28 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
+          # KRITISCH: Patch ALLE ServiceAccounts SOFORT nach Helm-Deployment
+          # Helm kann ServiceAccounts überschreiben, daher müssen wir sie erneut patchen
+          echo "🔐 CRITICAL: Patching all ServiceAccounts immediately after Helm deployment..."
+          sleep 2  # Kurz warten, damit Helm ServiceAccounts erstellt hat
+          PATCHED_COUNT=0
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
+            if [ -z "$HAS_SECRET" ]; then
+              echo "  🔐 Patching ServiceAccount: $sa"
+              CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+              if [ -n "$CURRENT_IPS" ]; then
+                kubectl patch serviceaccount "$sa" -n monitoring \
+                  --type='json' \
+                  -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) || true
+              else
+                kubectl patch serviceaccount "$sa" -n monitoring \
+                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) || true
+              fi
+            fi
+          done
+          echo "✅ Immediately patched $PATCHED_COUNT ServiceAccounts after Helm deployment"
+          
           # DEBUG: Prüfe welche Images die Pods verwenden
           echo "🔍 DEBUG: Checking which images pods are trying to pull..."
           sleep 5  # Warte kurz, damit Pods erstellt werden

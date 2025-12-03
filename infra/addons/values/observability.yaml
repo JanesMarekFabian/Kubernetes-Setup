@@ -12,12 +12,12 @@ grafana:
     dashboards:
       image:
         repository: quay.io/kiwigrid/k8s-sidecar
-        tag: "1.30.10"
+        tag: "2.1.2"  # Helm Chart default version
         registry: ""  # Will be set via --set in workflow
     datasources:
       image:
         repository: quay.io/kiwigrid/k8s-sidecar
-        tag: "1.30.10"
+        tag: "2.1.2"  # Helm Chart default version
         registry: ""  # Will be set via --set in workflow
 
 prometheus:
@@ -32,7 +32,7 @@ alertmanager:
   enabled: true
   image:
     repository: quay.io/prometheus/alertmanager
-    tag: "v0.26.0"
+    tag: "v0.29.0"  # Helm Chart default version
     registry: ""  # Will be set via --set in workflow
 
 prometheusOperator:
