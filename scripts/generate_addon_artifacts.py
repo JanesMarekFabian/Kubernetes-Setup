@@ -100,16 +100,15 @@ def rewrite_observability(acr_registry: str, data: Dict) -> None:
 
     def patch(node):
         if isinstance(node, dict):
+            # Wenn repository vorhanden ist, normalisiere es und setze registry
             if "repository" in node and node["repository"]:
                 # Normalize repository to remove registry prefix (keep only path)
                 node["repository"] = normalize_repo(str(node["repository"]).strip())
-                # FIX: Füge registry hinzu, auch wenn es nicht existiert oder leer ist
-                if "registry" not in node or not node["registry"]:
-                    node["registry"] = acr_registry
-            if "registry" in node:
-                # Set registry to ACR instead of removing it
-                # This way Helm will use: ${registry}/${repository} = acr.io/jettech/kube-webhook-certgen
+                # KRITISCH: Setze registry IMMER auf ACR (überschreibt auch leere Strings "")
+                # Dies stellt sicher, dass Helm ${registry}/${repository} verwendet
                 node["registry"] = acr_registry
+            # Gehe rekursiv durch alle Werte (auch wenn kein repository gefunden wurde)
+            # Dies stellt sicher, dass verschachtelte Strukturen behandelt werden
             for value in node.values():
                 patch(value)
         elif isinstance(node, list):
