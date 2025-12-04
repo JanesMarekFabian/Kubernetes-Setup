@@ -677,8 +677,14 @@ jobs:
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
             --set grafana.sidecar.dashboards.image.registry="${ACR_REGISTRY}" \
+            --set grafana.sidecar.dashboards.image.repository="kiwigrid/k8s-sidecar" \
+            --set grafana.sidecar.dashboards.image.tag="2.1.2" \
             --set grafana.sidecar.datasources.image.registry="${ACR_REGISTRY}" \
+            --set grafana.sidecar.datasources.image.repository="kiwigrid/k8s-sidecar" \
+            --set grafana.sidecar.datasources.image.tag="2.1.2" \
             --set alertmanager.image.registry="${ACR_REGISTRY}" \
+            --set alertmanager.image.repository="prometheus/alertmanager" \
+            --set alertmanager.image.tag="v0.29.0" \
             --timeout 10m
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
