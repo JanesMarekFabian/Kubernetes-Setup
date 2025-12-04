@@ -676,6 +676,9 @@ jobs:
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
+            --set grafana.sidecar.dashboards.image.registry="${ACR_REGISTRY}" \
+            --set grafana.sidecar.datasources.image.registry="${ACR_REGISTRY}" \
+            --set alertmanager.image.registry="${ACR_REGISTRY}" \
             --timeout 10m
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
