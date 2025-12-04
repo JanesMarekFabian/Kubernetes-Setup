@@ -53,6 +53,34 @@ jobs:
           echo "map-file=image-map.txt" >> "$GITHUB_OUTPUT"
           echo "values-file=infra/addons/values/observability.acr.yaml" >> "$GITHUB_OUTPUT"
           
+          # VALIDIERUNG: Prüfe ob observability.acr.yaml alle Images korrekt auf ACR umgeschrieben hat
+          echo "🔍 Validating observability.acr.yaml - checking if all images are rewritten to ACR..."
+          if [ -f "infra/addons/values/observability.acr.yaml" ]; then
+            # Prüfe ob noch quay.io, docker.io oder registry.k8s.io in der Datei sind (sollte nicht vorkommen)
+            PUBLIC_REGISTRIES=$(grep -E "(quay\.io|docker\.io|registry\.k8s\.io)" infra/addons/values/observability.acr.yaml 2>/dev/null || echo "")
+            if [ -n "$PUBLIC_REGISTRIES" ]; then
+              echo "⚠️ WARNING: Found public registries in observability.acr.yaml:"
+              echo "$PUBLIC_REGISTRIES"
+              echo "⚠️ These should be normalized (registry prefix removed) and registry field set to ACR"
+            else
+              echo "✅ No public registries found in observability.acr.yaml (all images should use ACR registry)"
+            fi
+            
+            # Prüfe ob alle registry-Felder auf ACR gesetzt sind
+            MISSING_REGISTRY=$(grep -A 2 "repository:" infra/addons/values/observability.acr.yaml | grep -B 1 "repository:" | grep -v "registry:" | grep "repository:" | head -1 || echo "")
+            if [ -n "$MISSING_REGISTRY" ]; then
+              echo "⚠️ WARNING: Some image entries may be missing registry field"
+            else
+              echo "✅ All image entries have registry field set"
+            fi
+            
+            # Zeige ein paar Beispiel-Images aus der Datei
+            echo "📋 Sample images from observability.acr.yaml:"
+            grep -A 3 "repository:" infra/addons/values/observability.acr.yaml | head -20 || true
+          else
+            echo "⚠️ WARNING: observability.acr.yaml not found!"
+          fi
+          
           # KRITISCH: Extrahiere ALLE Images die Helm Chart tatsächlich verwenden wird (inkl. Defaults)
           echo "🔍 Extracting all images from Helm Chart (including defaults)..."
           
@@ -800,6 +828,38 @@ jobs:
               done
             fi
             
+            # KRITISCH: Prüfe ob Pods noch von öffentlichen Registries ziehen (quay.io, docker.io)
+            # Diese müssen gelöscht werden, damit sie mit ACR-Images neu erstellt werden
+            PUBLIC_REGISTRY_PODS=""
+            for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
+              # Prüfe alle Container im Pod (auch Init-Container)
+              CONTAINER_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[*].image}' 2>/dev/null || echo "")
+              INIT_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.initContainers[*].image}' 2>/dev/null || echo "")
+              ALL_IMAGES="$CONTAINER_IMAGES $INIT_IMAGES"
+              
+              for image in $ALL_IMAGES; do
+                if [[ "$image" == quay.io/* ]] || [[ "$image" == docker.io/* ]] || [[ "$image" == registry.k8s.io/* ]]; then
+                  POD_NAME=$(echo "$pod" | cut -d/ -f2)
+                  if [[ "$PUBLIC_REGISTRY_PODS" != *"$POD_NAME"* ]]; then
+                    if [ -z "$PUBLIC_REGISTRY_PODS" ]; then
+                      PUBLIC_REGISTRY_PODS="$POD_NAME"
+                    else
+                      PUBLIC_REGISTRY_PODS="$PUBLIC_REGISTRY_PODS $POD_NAME"
+                    fi
+                    echo "  ⚠️ Pod $POD_NAME is pulling from public registry: $image"
+                  fi
+                fi
+              done
+            done
+            
+            if [ -n "$PUBLIC_REGISTRY_PODS" ]; then
+              echo "🗑️ Deleting pods pulling from public registries (should use ACR)..."
+              for pod_name in $PUBLIC_REGISTRY_PODS; do
+                echo "  🗑️ Deleting pod: $pod_name"
+                kubectl delete pod "$pod_name" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+              done
+            fi
+            
             # Lösche fehlgeschlagene Admission-Jobs NUR wenn ServiceAccount gepatcht ist
             ADMISSION_SA_EXISTS=$(kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring -o name 2>/dev/null || echo "")
             if [ -n "$ADMISSION_SA_EXISTS" ]; then
@@ -813,9 +873,10 @@ jobs:
               fi
             fi
             
-            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden und keine ImagePullBackOff/ErrImagePull Pods mehr existieren, können wir aufhören
-            if [ $PATCHED_COUNT -eq 0 ] && [ -z "$IMAGEPULL_PODS" ] && [ $ITERATION -gt 5 ]; then
-              echo "✅ No more ServiceAccounts to patch and no ImagePullBackOff/ErrImagePull pods - continuing..."
+            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden, keine ImagePullBackOff/ErrImagePull Pods mehr existieren
+            # und keine Pods mehr von öffentlichen Registries ziehen, können wir aufhören
+            if [ $PATCHED_COUNT -eq 0 ] && [ -z "$IMAGEPULL_PODS" ] && [ -z "$PUBLIC_REGISTRY_PODS" ] && [ $ITERATION -gt 5 ]; then
+              echo "✅ No more ServiceAccounts to patch, no ImagePullBackOff/ErrImagePull pods, and no pods pulling from public registries - continuing..."
               break
             fi
             
