@@ -676,23 +676,23 @@ jobs:
           # KRITISCH: Erstelle Helm Post-Renderer Script, der ALLE Images nach dem Rendern auf ACR umschreibt
           # Dies stellt sicher, dass auch verschachtelte Strukturen (wie sidecar.dashboards.image) korrekt überschrieben werden
           echo "🔧 Creating Helm Post-Renderer to rewrite all images to ACR..."
-          cat > /tmp/helm-post-render.sh <<'SCRIPTEOF'
-#!/bin/bash
-# Helm Post-Renderer: Ersetzt alle öffentlichen Registry-Images durch ACR
-set -euo pipefail
-# ACR_REGISTRY wird als Environment-Variable übergeben
-ACR_REGISTRY="${ACR_REGISTRY}"
-# Lese YAML von stdin
-YAML_INPUT=$(cat)
-# Ersetze quay.io Images
-YAML_OUTPUT=$(echo "$YAML_INPUT" | sed "s|quay\.io/\([^:]*\):\([^ ]*\)|${ACR_REGISTRY}/\1:\2|g")
-# Ersetze docker.io Images (nur wenn nicht bereits ACR)
-YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|docker\.io/\([^:]*\):\([^ ]*\)|${ACR_REGISTRY}/\1:\2|g")
-# Ersetze registry.k8s.io Images
-YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|registry\.k8s\.io/\([^:]*\):\([^ ]*\)|${ACR_REGISTRY}/\1:\2|g")
-# Output
-echo "$YAML_OUTPUT"
-SCRIPTEOF
+          {
+            echo '#!/bin/bash'
+            echo '# Helm Post-Renderer: Ersetzt alle öffentlichen Registry-Images durch ACR'
+            echo 'set -euo pipefail'
+            echo '# ACR_REGISTRY wird als Environment-Variable übergeben'
+            echo 'ACR_REGISTRY="${ACR_REGISTRY}"'
+            echo '# Lese YAML von stdin'
+            echo 'YAML_INPUT=$(cat)'
+            echo '# Ersetze quay.io Images'
+            echo 'YAML_OUTPUT=$(echo "$YAML_INPUT" | sed "s|quay\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo '# Ersetze docker.io Images (nur wenn nicht bereits ACR)'
+            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|docker\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo '# Ersetze registry.k8s.io Images'
+            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|registry\\.k8s\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo '# Output'
+            echo 'echo "$YAML_OUTPUT"'
+          } > /tmp/helm-post-render.sh
           chmod +x /tmp/helm-post-render.sh
           echo "✅ Post-Renderer created (will rewrite all public registry images to ${ACR_REGISTRY})"
           
