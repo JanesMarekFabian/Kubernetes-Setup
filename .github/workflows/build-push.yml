@@ -681,20 +681,39 @@ jobs:
             echo '# Helm Post-Renderer: Ersetzt alle öffentlichen Registry-Images durch ACR'
             echo 'set -euo pipefail'
             echo '# ACR_REGISTRY wird als Environment-Variable übergeben'
-            echo 'ACR_REGISTRY="${ACR_REGISTRY}"'
+            echo 'ACR_REGISTRY="${ACR_REGISTRY:-}"'
+            echo 'if [ -z "$ACR_REGISTRY" ]; then'
+            echo '  echo "ERROR: ACR_REGISTRY environment variable is not set" >&2'
+            echo '  exit 1'
+            echo 'fi'
             echo '# Lese YAML von stdin'
             echo 'YAML_INPUT=$(cat)'
-            echo '# Ersetze quay.io Images'
-            echo 'YAML_OUTPUT=$(echo "$YAML_INPUT" | sed "s|quay\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo '# Ersetze quay.io Images (einfacher Ansatz: ersetze alle Vorkommen)'
+            echo 'YAML_OUTPUT=$(echo "$YAML_INPUT" | sed "s|quay\\.io/\\([^:[:space:]]*\\):\\([^[:space:]]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
             echo '# Ersetze docker.io Images (nur wenn nicht bereits ACR)'
-            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|docker\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|docker\\.io/\\([^:[:space:]]*\\):\\([^[:space:]]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
             echo '# Ersetze registry.k8s.io Images'
-            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|registry\\.k8s\\.io/\\([^:]*\\):\\([^ ]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
+            echo 'YAML_OUTPUT=$(echo "$YAML_OUTPUT" | sed "s|registry\\.k8s\\.io/\\([^:[:space:]]*\\):\\([^[:space:]]*\\)|${ACR_REGISTRY}/\\1:\\2|g")'
             echo '# Output'
             echo 'echo "$YAML_OUTPUT"'
           } > /tmp/helm-post-render.sh
           chmod +x /tmp/helm-post-render.sh
           echo "✅ Post-Renderer created (will rewrite all public registry images to ${ACR_REGISTRY})"
+          
+          # Teste den Post-Renderer mit einem Beispiel
+          echo "🧪 Testing Post-Renderer..."
+          TEST_YAML="image: quay.io/kiwigrid/k8s-sidecar:2.1.2"
+          TEST_OUTPUT=$(echo "$TEST_YAML" | ACR_REGISTRY="${ACR_REGISTRY}" /tmp/helm-post-render.sh)
+          echo "  Input:  $TEST_YAML"
+          echo "  Output: $TEST_OUTPUT"
+          if echo "$TEST_OUTPUT" | grep -q "${ACR_REGISTRY}"; then
+            echo "  ✅ Post-Renderer test passed"
+          else
+            echo "  ⚠️ Post-Renderer test failed - output does not contain ACR_REGISTRY"
+          fi
+          
+          # Stelle sicher, dass ACR_REGISTRY als Environment-Variable verfügbar ist
+          export ACR_REGISTRY="${ACR_REGISTRY}"
           
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
