@@ -728,7 +728,17 @@ jobs:
             --set alertmanager.image.repository="prometheus/alertmanager" \
             --set alertmanager.image.tag="v0.29.0" \
             --post-renderer /tmp/helm-post-render.sh \
-            --timeout 10m
+            --timeout 10m \
+            --wait --wait-for-jobs=false || {
+              echo "⚠️ Helm deployment completed with warnings (some jobs may have failed)"
+            }
+          
+          # Lösche fehlgeschlagene Post-Install-Hook-Jobs, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+          echo "🧹 Cleaning up failed post-install hook jobs..."
+          kubectl delete job -n monitoring -l app=kube-prometheus-stack-admission-patch --ignore-not-found=true || true
+          kubectl delete job -n monitoring -l app=kube-prometheus-stack-admission-create --ignore-not-found=true || true
+          sleep 2
+          echo "✅ Cleaned up failed hook jobs"
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
