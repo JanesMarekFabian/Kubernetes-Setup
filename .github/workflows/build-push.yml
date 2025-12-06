@@ -673,6 +673,46 @@ jobs:
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
           fi
           
+          # KRITISCH: Erstelle ALLE ServiceAccounts VOR Helm-Deployment
+          # Damit Pods sofort ACR-Zugriff haben, wenn sie erstellt werden
+          echo "🔐 Creating ALL ServiceAccounts BEFORE Helm deployment..."
+          SERVICE_ACCOUNTS=(
+            "kube-prometheus-stack-admission"
+            "kube-prometheus-stack-grafana"
+            "kube-prometheus-stack-alertmanager"
+            "kube-prometheus-stack-prometheus"
+            "kube-prometheus-stack-operator"
+            "kube-prometheus-stack-kube-state-metrics"
+            "kube-prometheus-stack-prometheus-node-exporter"
+          )
+          
+          for sa in "${SERVICE_ACCOUNTS[@]}"; do
+            if ! kubectl get serviceaccount "$sa" -n monitoring 2>/dev/null; then
+              echo "  Creating ServiceAccount: $sa"
+              kubectl create serviceaccount "$sa" -n monitoring || true
+              # Setze Labels, die Helm erwartet
+              kubectl label serviceaccount "$sa" -n monitoring \
+                app.kubernetes.io/managed-by=Helm --overwrite || true
+            fi
+            # Patch mit imagePullSecrets (wichtig: auch wenn bereits vorhanden, um sicherzustellen)
+            echo "  Patching ServiceAccount: $sa with acr-pull"
+            CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+            if [[ "$CURRENT_IPS" == *"acr-pull"* ]]; then
+              echo "    ✅ Already has acr-pull"
+            else
+              if [ -n "$CURRENT_IPS" ]; then
+                kubectl patch serviceaccount "$sa" -n monitoring \
+                  --type='json' \
+                  -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || true
+              else
+                kubectl patch serviceaccount "$sa" -n monitoring \
+                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+              fi
+              echo "    ✅ Patched with acr-pull"
+            fi
+          done
+          echo "✅ All ServiceAccounts created and patched before Helm deployment"
+          
           # KRITISCH: Erstelle Helm Post-Renderer Script, der ALLE Images nach dem Rendern auf ACR umschreibt
           # Dies stellt sicher, dass auch verschachtelte Strukturen (wie sidecar.dashboards.image) korrekt überschrieben werden
           echo "🔧 Creating Helm Post-Renderer to rewrite all images to ACR..."
