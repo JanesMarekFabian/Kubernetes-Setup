@@ -673,45 +673,8 @@ jobs:
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
           fi
           
-          # KRITISCH: Erstelle ALLE ServiceAccounts VOR Helm-Deployment
-          # Damit Pods sofort ACR-Zugriff haben, wenn sie erstellt werden
-          echo "🔐 Creating ALL ServiceAccounts BEFORE Helm deployment..."
-          SERVICE_ACCOUNTS=(
-            "kube-prometheus-stack-admission"
-            "kube-prometheus-stack-grafana"
-            "kube-prometheus-stack-alertmanager"
-            "kube-prometheus-stack-prometheus"
-            "kube-prometheus-stack-operator"
-            "kube-prometheus-stack-kube-state-metrics"
-            "kube-prometheus-stack-prometheus-node-exporter"
-          )
-          
-          for sa in "${SERVICE_ACCOUNTS[@]}"; do
-            if ! kubectl get serviceaccount "$sa" -n monitoring 2>/dev/null; then
-              echo "  Creating ServiceAccount: $sa"
-              kubectl create serviceaccount "$sa" -n monitoring || true
-              # Setze Labels, die Helm erwartet
-              kubectl label serviceaccount "$sa" -n monitoring \
-                app.kubernetes.io/managed-by=Helm --overwrite || true
-            fi
-            # Patch mit imagePullSecrets (wichtig: auch wenn bereits vorhanden, um sicherzustellen)
-            echo "  Patching ServiceAccount: $sa with acr-pull"
-            CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
-            if [[ "$CURRENT_IPS" == *"acr-pull"* ]]; then
-              echo "    ✅ Already has acr-pull"
-            else
-              if [ -n "$CURRENT_IPS" ]; then
-                kubectl patch serviceaccount "$sa" -n monitoring \
-                  --type='json' \
-                  -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || true
-              else
-                kubectl patch serviceaccount "$sa" -n monitoring \
-                  -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
-              fi
-              echo "    ✅ Patched with acr-pull"
-            fi
-          done
-          echo "✅ All ServiceAccounts created and patched before Helm deployment"
+          # HINWEIS: Wir erstellen NUR den admission ServiceAccount vorher (für Helm Hooks)
+          # Alle anderen ServiceAccounts werden von Helm erstellt und dann sofort gepatcht
           
           # KRITISCH: Erstelle Helm Post-Renderer Script, der ALLE Images nach dem Rendern auf ACR umschreibt
           # Dies stellt sicher, dass auch verschachtelte Strukturen (wie sidecar.dashboards.image) korrekt überschrieben werden
@@ -839,154 +802,25 @@ jobs:
             echo "  - ${ACR_REGISTRY}/kube-state-metrics/kube-state-metrics:v2.10.1"
           fi
           
-          # KRITISCH: Prüfe ob Helm Release existiert, falls nicht erstelle ServiceAccounts manuell
-          echo "🔍 Checking if Helm release exists..."
-          HELM_RELEASE_EXISTS=$(helm list -n monitoring -q 2>/dev/null | grep -q "kube-prometheus-stack" && echo "true" || echo "false")
+          # Einfaches Cleanup: Lösche fehlgeschlagene Pods einmalig, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+          echo "🧹 Cleaning up failed pods (if any)..."
+          sleep 5  # Warte kurz, damit Pods erstellt werden
           
-          if [ "$HELM_RELEASE_EXISTS" = "false" ]; then
-            echo "⚠️ Helm release does not exist! Creating ServiceAccounts manually before Helm deployment..."
-            
-            # Erstelle kritische ServiceAccounts manuell (falls sie fehlen), damit Jobs nicht fehlschlagen
-            echo "🔐 Creating admission ServiceAccount if missing..."
-            if ! kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring 2>/dev/null; then
-              kubectl create serviceaccount kube-prometheus-stack-admission -n monitoring || true
-              kubectl label serviceaccount kube-prometheus-stack-admission -n monitoring \
-                app.kubernetes.io/name=kube-prometheus-stack \
-                app.kubernetes.io/component=prometheus-operator-webhook \
-                app.kubernetes.io/managed-by=Helm --overwrite || true
-              kubectl annotate serviceaccount kube-prometheus-stack-admission -n monitoring \
-                helm.sh/hook=pre-install,pre-upgrade,post-install,post-upgrade --overwrite || true
-            fi
-            # Patch den ServiceAccount mit imagePullSecrets
-            kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
-            
-            echo "✅ ServiceAccount created/verified"
+          # Lösche Pods mit ImagePullBackOff oder ErrImagePull
+          IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$IMAGEPULL_PODS" ]; then
+            echo "🗑️ Deleting pods with ImagePullBackOff/ErrImagePull..."
+            for pod in $IMAGEPULL_PODS; do
+              echo "  🗑️ Deleting pod: $pod"
+              kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
+            done
+          else
+            echo "✅ No failed pods found"
           fi
           
-          # KRITISCH: Kontinuierliches Patchen von ServiceAccounts nach Helm-Deployment
-          echo "🔐 CRITICAL: Continuously patching ServiceAccounts after Helm deployment..."
-          echo "⚠️ This ensures ALL ServiceAccounts get patched, even if created later"
-          
-          # Kontinuierliche Loop: Patch ServiceAccounts und lösche fehlgeschlagene Pods
-          MAX_ITERATIONS=20  # 20 * 5s = 100 Sekunden max
-          ITERATION=0
-          LAST_PATCHED_COUNT=0
-          
-          while [ $ITERATION -lt $MAX_ITERATIONS ]; do
-            ITERATION=$((ITERATION + 1))
-            echo "🔄 Iteration $ITERATION/$MAX_ITERATIONS: Checking and patching ServiceAccounts..."
-            
-            # Erstelle admission ServiceAccount falls er fehlt (wichtig für Pre-Install Hooks)
-            if ! kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring 2>/dev/null; then
-              kubectl create serviceaccount kube-prometheus-stack-admission -n monitoring || true
-              kubectl label serviceaccount kube-prometheus-stack-admission -n monitoring \
-                app.kubernetes.io/name=kube-prometheus-stack \
-                app.kubernetes.io/component=prometheus-operator-webhook \
-                app.kubernetes.io/managed-by=Helm --overwrite || true
-              kubectl annotate serviceaccount kube-prometheus-stack-admission -n monitoring \
-                helm.sh/hook=pre-install,pre-upgrade,post-install,post-upgrade --overwrite || true
-            fi
-            # Patch den ServiceAccount mit imagePullSecrets
-            kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
-            
-            # Patch ALLE ServiceAccounts (auch neu erstellte) - INKLUSIVE default
-            PATCHED_COUNT=0
-            for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
-              # Prüfe ob ServiceAccount bereits acr-pull als ImagePullSecret hat
-              HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
-              if [ -z "$HAS_SECRET" ]; then
-                echo "  🔐 Patching ServiceAccount: $sa"
-                # Hole aktuelle ImagePullSecrets (falls vorhanden)
-                CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
-                if [ -n "$CURRENT_IPS" ]; then
-                  # Füge acr-pull zu bestehenden Secrets hinzu
-                  kubectl patch serviceaccount "$sa" -n monitoring \
-                    --type='json' \
-                    -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) && echo "    ✅ Patched $sa (added to existing)" || true
-                else
-                  # Erstelle neue ImagePullSecrets Liste
-                  kubectl patch serviceaccount "$sa" -n monitoring \
-                    -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null && PATCHED_COUNT=$((PATCHED_COUNT + 1)) && echo "    ✅ Patched $sa (created new)" || true
-                fi
-              else
-                echo "  ✅ ServiceAccount $sa already has acr-pull"
-              fi
-            done
-            
-            if [ $PATCHED_COUNT -gt 0 ]; then
-              echo "✅ Patched $PATCHED_COUNT new ServiceAccounts"
-              LAST_PATCHED_COUNT=$PATCHED_COUNT
-            fi
-            
-            # Lösche Pods mit ImagePullBackOff oder ErrImagePull, damit sie mit gepatchten ServiceAccounts neu erstellt werden
-            IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
-            if [ -n "$IMAGEPULL_PODS" ]; then
-              echo "🗑️ Deleting pods with ImagePullBackOff/ErrImagePull to trigger restart..."
-              for pod in $IMAGEPULL_PODS; do
-                echo "  🗑️ Deleting pod: $pod"
-                kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
-              done
-            fi
-            
-            # KRITISCH: Prüfe ob Pods noch von öffentlichen Registries ziehen (quay.io, docker.io)
-            # Diese müssen gelöscht werden, damit sie mit ACR-Images neu erstellt werden
-            PUBLIC_REGISTRY_PODS=""
-            for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
-              # Prüfe alle Container im Pod (auch Init-Container)
-              CONTAINER_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[*].image}' 2>/dev/null || echo "")
-              INIT_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.initContainers[*].image}' 2>/dev/null || echo "")
-              ALL_IMAGES="$CONTAINER_IMAGES $INIT_IMAGES"
-              
-              for image in $ALL_IMAGES; do
-                if [[ "$image" == quay.io/* ]] || [[ "$image" == docker.io/* ]] || [[ "$image" == registry.k8s.io/* ]]; then
-                  POD_NAME=$(echo "$pod" | cut -d/ -f2)
-                  if [[ "$PUBLIC_REGISTRY_PODS" != *"$POD_NAME"* ]]; then
-                    if [ -z "$PUBLIC_REGISTRY_PODS" ]; then
-                      PUBLIC_REGISTRY_PODS="$POD_NAME"
-                    else
-                      PUBLIC_REGISTRY_PODS="$PUBLIC_REGISTRY_PODS $POD_NAME"
-                    fi
-                    echo "  ⚠️ Pod $POD_NAME is pulling from public registry: $image"
-                  fi
-                fi
-              done
-            done
-            
-            if [ -n "$PUBLIC_REGISTRY_PODS" ]; then
-              echo "🗑️ Deleting pods pulling from public registries (should use ACR)..."
-              for pod_name in $PUBLIC_REGISTRY_PODS; do
-                echo "  🗑️ Deleting pod: $pod_name"
-                kubectl delete pod "$pod_name" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
-              done
-            fi
-            
-            # Lösche fehlgeschlagene Admission-Jobs NUR wenn ServiceAccount gepatcht ist
-            ADMISSION_SA_EXISTS=$(kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring -o name 2>/dev/null || echo "")
-            if [ -n "$ADMISSION_SA_EXISTS" ]; then
-              ADMISSION_SA_PATCHED=$(kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
-              if [ -n "$ADMISSION_SA_PATCHED" ]; then
-                echo "🔄 Admission ServiceAccount is patched, deleting failed jobs..."
-                kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-                kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-              else
-                echo "⏳ Waiting for admission ServiceAccount to be patched before deleting jobs..."
-              fi
-            fi
-            
-            # Wenn keine neuen ServiceAccounts mehr gepatcht wurden, keine ImagePullBackOff/ErrImagePull Pods mehr existieren
-            # und keine Pods mehr von öffentlichen Registries ziehen, können wir aufhören
-            if [ $PATCHED_COUNT -eq 0 ] && [ -z "$IMAGEPULL_PODS" ] && [ -z "$PUBLIC_REGISTRY_PODS" ] && [ $ITERATION -gt 5 ]; then
-              echo "✅ No more ServiceAccounts to patch, no ImagePullBackOff/ErrImagePull pods, and no pods pulling from public registries - continuing..."
-              break
-            fi
-            
-            sleep 5  # Warte zwischen Iterationen
-          done
-          
-          echo "✅ Finished continuous ServiceAccount patching. Patched $LAST_PATCHED_COUNT ServiceAccounts in total."
-          sleep 3  # Kurz warten, damit alles angewendet ist
+          # Lösche fehlgeschlagene Admission-Jobs
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
           
           # Prüfe ob Ressourcen erstellt wurden (falls nicht, ist Helm stuck)
           echo "🔍 Checking if resources were created..."
