@@ -819,7 +819,7 @@ jobs:
             fi
             # Patch den ServiceAccount mit imagePullSecrets
             kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' --ignore-not-found=true || true
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
             
             echo "✅ ServiceAccount created/verified"
           fi
@@ -849,7 +849,7 @@ jobs:
             fi
             # Patch den ServiceAccount mit imagePullSecrets
             kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
-              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' --ignore-not-found=true || true
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
             
             # Patch ALLE ServiceAccounts (auch neu erstellte) - INKLUSIVE default
             PATCHED_COUNT=0
