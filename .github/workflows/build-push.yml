@@ -676,6 +676,26 @@ jobs:
           # HINWEIS: Wir erstellen NUR den admission ServiceAccount vorher (für Helm Hooks)
           # Alle anderen ServiceAccounts werden von Helm erstellt und dann sofort gepatcht
           
+          # KRITISCH: Lösche ServiceAccounts, die nicht von Helm verwaltet werden
+          # Das verhindert Import-Fehler beim ersten Deployment
+          echo "🧹 Cleaning up ServiceAccounts not managed by Helm (to prevent import errors)..."
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
+            # Überspringe default und admission ServiceAccount
+            if [[ "$sa" == "default" ]] || [[ "$sa" == "kube-prometheus-stack-admission" ]]; then
+              continue
+            fi
+            
+            # Prüfe ob ServiceAccount von Helm verwaltet wird
+            HELM_RELEASE=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || echo "")
+            if [ -z "$HELM_RELEASE" ]; then
+              echo "  🗑️ Deleting ServiceAccount $sa (not managed by Helm, will be recreated by Helm)..."
+              kubectl delete serviceaccount "$sa" -n monitoring --ignore-not-found=true || true
+            else
+              echo "  ✅ ServiceAccount $sa is managed by Helm (release: $HELM_RELEASE)"
+            fi
+          done
+          echo "✅ Cleanup completed"
+          
           # KRITISCH: Erstelle Helm Post-Renderer Script, der ALLE Images nach dem Rendern auf ACR umschreibt
           # Dies stellt sicher, dass auch verschachtelte Strukturen (wie sidecar.dashboards.image) korrekt überschrieben werden
           echo "🔧 Creating Helm Post-Renderer to rewrite all images to ACR..."
@@ -718,6 +738,10 @@ jobs:
           # Stelle sicher, dass ACR_REGISTRY als Environment-Variable verfügbar ist
           export ACR_REGISTRY="${ACR_REGISTRY}"
           
+          # Erstes Deployment: Wird fehlschlagen wegen Firewall (nur ACR erlaubt)
+          # Wir deployen OHNE --wait, damit es schnell durchläuft und Pods erstellt werden
+          echo "🚀 First deployment (will fail due to firewall, but creates resources)..."
+          set +e  # Temporär Fehler ignorieren
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
@@ -731,10 +755,15 @@ jobs:
             --set alertmanager.image.repository="prometheus/alertmanager" \
             --set alertmanager.image.tag="v0.29.0" \
             --post-renderer /tmp/helm-post-render.sh \
-            --timeout 10m \
-            --wait --wait-for-jobs=false || {
-              echo "⚠️ Helm deployment completed with warnings (some jobs may have failed)"
-            }
+            --timeout 2m \
+            --wait=false 2>&1 | head -20 || true  # Zeige nur ersten Teil, dann abbrechen
+          set -e  # Fehler wieder aktivieren
+          
+          echo "⏸️ First deployment completed (pods will fail due to firewall, but resources are created)"
+          echo "🔧 Now patching ServiceAccounts and cleaning up failed pods..."
+          
+          # Warte kurz, damit Pods erstellt wurden
+          sleep 5
           
           # Lösche fehlgeschlagene Post-Install-Hook-Jobs, damit sie mit gepatchten ServiceAccounts neu erstellt werden
           echo "🧹 Cleaning up failed post-install hook jobs..."
@@ -822,62 +851,29 @@ jobs:
           kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
           kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
           
-          # Prüfe ob Ressourcen erstellt wurden (falls nicht, ist Helm stuck)
-          echo "🔍 Checking if resources were created..."
-          sleep 2  # Kurz warten, damit Helm Ressourcen erstellt hat
+          # Zweites Deployment: Jetzt sollten Pods mit gepatchten ServiceAccounts funktionieren
+          echo "🚀 Second deployment (with patched ServiceAccounts, should succeed)..."
+          sleep 3  # Kurz warten, damit Pods gelöscht wurden
           
-          OPERATOR_EXISTS=$(kubectl get deployment kube-prometheus-stack-operator -n monitoring -o name 2>/dev/null || echo "")
-          if [ -z "$OPERATOR_EXISTS" ]; then
-            echo "⚠️ Operator deployment not found! Helm may be stuck. Checking status..."
-            echo "📊 Current resources in monitoring namespace:"
-            kubectl get all -n monitoring || true
-            echo "📊 Current jobs:"
-            kubectl get jobs -n monitoring || true
-            
-            # Prüfe ob fehlgeschlagene Admission-Jobs das Deployment blockieren
-            FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
-            if [ -n "$FAILED_JOBS" ]; then
-              echo "🔧 Found failed jobs blocking deployment. Cleaning up..."
-              kubectl delete jobs -n monitoring --all --ignore-not-found=true || true
-              sleep 5
-            fi
-            
-            # Versuche nochmal zu warten (manchmal dauert es etwas länger)
-            echo "⏳ Waiting additional 30s for resources to be created..."
-            sleep 30
-            
-            OPERATOR_EXISTS=$(kubectl get deployment kube-prometheus-stack-operator -n monitoring -o name 2>/dev/null || echo "")
-            if [ -z "$OPERATOR_EXISTS" ]; then
-              echo "❌ Operator still not found after cleanup. Helm deployment may have failed."
-              echo "📊 Current state:"
-              kubectl get all -n monitoring || true
-              echo "⚠️ Continuing anyway - resources may be created later..."
-            fi
-          fi
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            -n monitoring \
+            -f infra/addons/values/observability.acr.yaml \
+            --set grafana.sidecar.dashboards.image.registry="${ACR_REGISTRY}" \
+            --set grafana.sidecar.dashboards.image.repository="kiwigrid/k8s-sidecar" \
+            --set grafana.sidecar.dashboards.image.tag="2.1.2" \
+            --set grafana.sidecar.datasources.image.registry="${ACR_REGISTRY}" \
+            --set grafana.sidecar.datasources.image.repository="kiwigrid/k8s-sidecar" \
+            --set grafana.sidecar.datasources.image.tag="2.1.2" \
+            --set alertmanager.image.registry="${ACR_REGISTRY}" \
+            --set alertmanager.image.repository="prometheus/alertmanager" \
+            --set alertmanager.image.tag="v0.29.0" \
+            --post-renderer /tmp/helm-post-render.sh \
+            --timeout 10m \
+            --wait --wait-for-jobs=false || {
+              echo "⚠️ Helm deployment completed with warnings (some jobs may have failed)"
+            }
           
-          # Warte gezielt auf den Operator (wichtigster Teil) - mit Retry-Logik
-          echo "⏳ Waiting for operator to be ready..."
-          MAX_RETRIES=12  # 12 * 10s = 2 Minuten
-          RETRY_COUNT=0
-          OPERATOR_READY=false
-          
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if kubectl rollout status deployment/kube-prometheus-stack-operator -n monitoring --timeout=10s 2>/dev/null; then
-              OPERATOR_READY=true
-              echo "✅ Operator is ready!"
-              break
-            fi
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "⏳ Operator not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES)..."
-            sleep 10
-          done
-          
-          if [ "$OPERATOR_READY" = false ]; then
-            echo "⚠️ Operator rollout status check failed or timed out"
-            echo "📊 Checking operator pod status:"
-            kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=operator || true
-            echo "⚠️ Continuing anyway - ServiceAccounts are already patched in continuous loop..."
-          fi
+          echo "✅ Second deployment completed (Helm waited for resources with --wait)"
           
           # Zeige Status aller Pods
           echo "📊 Current pod status:"
