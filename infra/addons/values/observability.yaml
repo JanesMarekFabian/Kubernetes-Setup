@@ -22,12 +22,12 @@ grafana:
         registry: ""  # Will be set via --set in workflow
 
 prometheus:
+  # Service für direkten Zugriff auf Prometheus (Haupt-Service)
+  service:
+    type: NodePort
+    nodePort: 30001  # Prometheus auf Port 30001 (http://<HOST_IP>:30001)
   prometheusSpec:
     retention: 7d
-    # Service für direkten Zugriff auf Prometheus
-    service:
-      type: NodePort
-      nodePort: 30001  # Prometheus auf Port 30001 (http://<HOST_IP>:30001)
     image:
       repository: quay.io/prometheus/prometheus
       tag: "v2.48.0"
