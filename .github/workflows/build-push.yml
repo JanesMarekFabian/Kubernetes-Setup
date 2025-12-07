@@ -878,6 +878,34 @@ jobs:
           # Zeige Status aller Pods
           echo "📊 Current pod status:"
           kubectl get pods -n monitoring -o wide || true
+          
+          # Zeige Zugriffs-URLs für Dashboards
+          echo ""
+          echo "🌐 Dashboard Access URLs (via NodePort):"
+          echo "=========================================="
+          # Hole Host-IP (erste Node-IP)
+          HOST_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "N/A")
+          if [ "$HOST_IP" != "N/A" ]; then
+            echo "  📊 Grafana:      http://${HOST_IP}:30000"
+            echo "     Login:        admin / admin"
+            echo ""
+            echo "  📈 Prometheus:   http://${HOST_IP}:30001"
+            echo ""
+            echo "  🔔 Alertmanager: http://${HOST_IP}:30002"
+            echo ""
+            echo "  💡 Tip: Replace ${HOST_IP} with your actual node IP if different"
+          else
+            echo "  ⚠️ Could not determine host IP"
+            echo "  📊 Grafana:      http://<NODE_IP>:30000"
+            echo "  📈 Prometheus:   http://<NODE_IP>:30001"
+            echo "  🔔 Alertmanager: http://<NODE_IP>:30002"
+          fi
+          echo "=========================================="
+          echo ""
+          echo "📡 Networking Metrics:"
+          echo "  NGINX Ingress Controller metrics are available via Prometheus"
+          echo "  Import NGINX dashboards in Grafana (e.g., dashboard ID 9614)"
+          echo "  Prometheus scrapes NGINX metrics automatically (metrics.enabled=true)"
 
       - name: Patch ServiceAccounts after deployment and restart failed jobs
         shell: bash
