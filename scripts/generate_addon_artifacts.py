@@ -100,15 +100,15 @@ def rewrite_observability(acr_registry: str, data: Dict) -> None:
 
     def patch(node):
         if isinstance(node, dict):
-            # Wenn repository vorhanden ist, normalisiere es und setze registry
+            # If repository is present, normalize it and set registry
             if "repository" in node and node["repository"]:
                 # Normalize repository to remove registry prefix (keep only path)
                 node["repository"] = normalize_repo(str(node["repository"]).strip())
-                # KRITISCH: Setze registry IMMER auf ACR (überschreibt auch leere Strings "")
-                # Dies stellt sicher, dass Helm ${registry}/${repository} verwendet
+                # CRITICAL: Always set registry to ACR (overwrites even empty strings "")
+                # This ensures Helm uses ${registry}/${repository}
                 node["registry"] = acr_registry
-            # Gehe rekursiv durch alle Werte (auch wenn kein repository gefunden wurde)
-            # Dies stellt sicher, dass verschachtelte Strukturen behandelt werden
+            # Recursively process all values (even if no repository was found)
+            # This ensures nested structures are handled
             for value in node.values():
                 patch(value)
         elif isinstance(node, list):
@@ -134,14 +134,14 @@ def main() -> None:
     observability = load_yaml(OBSERVABILITY_VALUES)
     ingress = load_yaml(INGRESS_VALUES)
 
-    # Sammle Images aus Values-Dateien
+    # Collect images from values files
     image_entries = list(collect_images(observability)) + list(collect_images(ingress))
     image_entries.extend(get_static_images())
 
-    # Schreibe initiale image-map.txt
+    # Write initial image-map.txt
     write_image_map(image_entries)
     
-    # Generiere observability.acr.yaml (wird später im Workflow mit Helm Template erweitert)
+    # Generate observability.acr.yaml (will be extended later in workflow with Helm Template)
     rewrite_observability(acr_registry, observability)
     
     print(f"✅ Generated {OUTPUT_IMAGE_MAP} and {OUTPUT_OBSERVABILITY_ACR}")

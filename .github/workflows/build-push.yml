@@ -53,10 +53,10 @@ jobs:
           echo "map-file=image-map.txt" >> "$GITHUB_OUTPUT"
           echo "values-file=infra/addons/values/observability.acr.yaml" >> "$GITHUB_OUTPUT"
           
-          # VALIDIERUNG: Prüfe ob observability.acr.yaml alle Images korrekt auf ACR umgeschrieben hat
+          # VALIDATION: Check if observability.acr.yaml has all images correctly rewritten to ACR
           echo "🔍 Validating observability.acr.yaml - checking if all images are rewritten to ACR..."
           if [ -f "infra/addons/values/observability.acr.yaml" ]; then
-            # Prüfe ob noch quay.io, docker.io oder registry.k8s.io in der Datei sind (sollte nicht vorkommen)
+            # Check if quay.io, docker.io or registry.k8s.io are still in the file (should not occur)
             PUBLIC_REGISTRIES=$(grep -E "(quay\.io|docker\.io|registry\.k8s\.io)" infra/addons/values/observability.acr.yaml 2>/dev/null || echo "")
             if [ -n "$PUBLIC_REGISTRIES" ]; then
               echo "⚠️ WARNING: Found public registries in observability.acr.yaml:"
@@ -66,7 +66,7 @@ jobs:
               echo "✅ No public registries found in observability.acr.yaml (all images should use ACR registry)"
             fi
             
-            # Prüfe ob alle registry-Felder auf ACR gesetzt sind
+            # Check if all registry fields are set to ACR
             MISSING_REGISTRY=$(grep -A 2 "repository:" infra/addons/values/observability.acr.yaml | grep -B 1 "repository:" | grep -v "registry:" | grep "repository:" | head -1 || echo "")
             if [ -n "$MISSING_REGISTRY" ]; then
               echo "⚠️ WARNING: Some image entries may be missing registry field"
@@ -74,17 +74,17 @@ jobs:
               echo "✅ All image entries have registry field set"
             fi
             
-            # Zeige ein paar Beispiel-Images aus der Datei
+            # Show some example images from the file
             echo "📋 Sample images from observability.acr.yaml:"
             grep -A 3 "repository:" infra/addons/values/observability.acr.yaml | head -20 || true
           else
             echo "⚠️ WARNING: observability.acr.yaml not found!"
           fi
           
-          # KRITISCH: Extrahiere ALLE Images die Helm Chart tatsächlich verwenden wird (inkl. Defaults)
+          # CRITICAL: Extract ALL images that Helm Chart will actually use (including defaults)
           echo "🔍 Extracting all images from Helm Chart (including defaults)..."
           
-          # Template das Chart mit unseren Values, um alle tatsächlich verwendeten Images zu sehen
+            # Template the chart with our values to see all actually used images
           if [ -f "infra/addons/values/observability.acr.yaml" ]; then
             VALUES_FILE="infra/addons/values/observability.acr.yaml"
           elif [ -f "infra/addons/values/observability.yaml" ]; then
@@ -107,7 +107,7 @@ jobs:
                 echo "📦 Found images from Helm template:"
                 echo "$HELM_IMAGES" | head -20
                 
-                # Füge fehlende Images zum image-map.txt hinzu
+                # Add missing images to image-map.txt
                 MISSING_COUNT=0
                 while IFS= read -r image; do
                   [[ -z "$image" ]] && continue
@@ -143,7 +143,7 @@ jobs:
                     continue
                   fi
                   
-                  # Prüfe ob Image bereits im image-map.txt ist (flexibler Match)
+                  # Check if image is already in image-map.txt (flexible match)
                   if ! grep -qE "^${SOURCE_REPO}\|.*\|${TAG}$|^.*\|${TARGET_REPO}\|${TAG}$" image-map.txt 2>/dev/null; then
                     echo "${SOURCE_REPO}|${TARGET_REPO}|${TAG}" >> image-map.txt
                     echo "  ➕ Added missing image: ${SOURCE_REPO}:${TAG} -> ${ACR_REGISTRY}/${TARGET_REPO}:${TAG}"
@@ -525,10 +525,10 @@ jobs:
             echo "⚠️ observability.acr.yaml not found, will be generated if needed"
           fi
           
-          # Validierung: Prüfe ob observability.acr.yaml alle Images auf ACR umschreibt
+          # Validation: Check if observability.acr.yaml rewrites all images to ACR
           if [ -f "infra/addons/values/observability.acr.yaml" ]; then
             echo "🔍 Validating observability.acr.yaml..."
-            # Prüfe ob noch quay.io oder docker.io Referenzen vorhanden sind (sollten nicht sein)
+            # Check if quay.io or docker.io references are still present (should not be)
             PUBLIC_REFS=$(grep -E "(quay\.io|docker\.io)" infra/addons/values/observability.acr.yaml | grep -v "^#" | grep -v "registry:" || echo "")
             if [ -n "$PUBLIC_REFS" ]; then
               echo "⚠️ Warning: Found public registry references in observability.acr.yaml:"
@@ -538,7 +538,7 @@ jobs:
               echo "✅ All image references appear to use ACR registry"
             fi
             
-            # Zeige ein paar Image-Referenzen zur Verifikation
+            # Show some image references for verification
             echo "📋 Sample image references from observability.acr.yaml:"
             grep -A 2 "repository:" infra/addons/values/observability.acr.yaml | head -10 || true
           fi
@@ -568,7 +568,7 @@ jobs:
           kubectl patch serviceaccount kube-prometheus-stack-admission -n monitoring \
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           
-          # Patch alle ServiceAccounts im monitoring Namespace (für zukünftige)
+          # Patch all ServiceAccounts in monitoring namespace (for future ones)
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
             echo "Patching ServiceAccount: $sa"
             kubectl patch serviceaccount "$sa" -n monitoring \
@@ -588,38 +588,38 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Debug: Zeige die verwendete Values-Datei
+          # Debug: Show the values file being used
           echo "📋 Using values file:"
           cat infra/addons/values/observability.acr.yaml | head -50
           
-          # Debug: Prüfe aktuelle Pods vor Deployment
+          # Debug: Check current pods before deployment
           echo "📊 Current pods in monitoring namespace:"
           kubectl get pods -n monitoring || true
           
-          # Bereinige alte fehlgeschlagene Admission-Jobs
+          # Clean up old failed admission jobs
           echo "🧹 Cleaning up old failed admission jobs..."
-          # Lösche Jobs (auch Terminating) - force delete für hängende Jobs
+          # Delete jobs (including Terminating) - force delete for stuck jobs
           kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
-          # Lösche Pods direkt (auch Terminating) - wichtig, da Pods manchmal hängen bleiben
+          # Delete pods directly (including Terminating) - important, as pods sometimes get stuck
           kubectl get pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook -o name 2>/dev/null | xargs -r kubectl delete -n monitoring --grace-period=0 --force --ignore-not-found=true || true
           
-          # Warte länger, damit Cleanup abgeschlossen ist
+          # Wait longer for cleanup to complete
           sleep 5
           
-          # Deploy asynchron (ohne --wait, damit Workflow nicht hängt)
-          echo "🚀 Deploying monitoring stack (asynchron)..."
+          # Deploy asynchronously (without --wait, so workflow doesn't hang)
+          echo "🚀 Deploying monitoring stack (asynchronously)..."
           
-          # Aggressives Cleanup für stuck Helm-Releases (IMMER ausführen)
+          # Aggressive cleanup for stuck Helm releases (ALWAYS execute)
           echo "🔧 Force cleaning Helm locks and stuck releases..."
           
-          # Versuche normale Uninstall (mit --no-hooks um Hooks zu überspringen)
+          # Try normal uninstall (with --no-hooks to skip hooks)
           helm uninstall kube-prometheus-stack -n monitoring --no-hooks --ignore-not-found=true 2>/dev/null || true
           
-          # Debug: Zeige alle Secrets im Namespace
+          # Debug: Show all secrets in namespace
           echo "📋 Current secrets in monitoring namespace:"
           kubectl get secrets -n monitoring -o name 2>/dev/null || true
           
-          # Lösche ALLE Helm-Secrets die mit dem Release zu tun haben
+          # Delete ALL Helm secrets related to the release
           echo "🗑️ Deleting Helm release secrets..."
           # Helm 3 Format: sh.helm.release.v1.<release-name>.<revision>
           kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "sh\.helm\.release\.v1\.kube-prometheus-stack\." | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
@@ -629,20 +629,20 @@ jobs:
           kubectl delete secret -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
           kubectl delete secret -n monitoring -l name=kube-prometheus-stack --ignore-not-found=true || true
           
-          # Lösche ConfigMaps
+          # Delete ConfigMaps
           echo "🗑️ Deleting Helm release configmaps..."
           kubectl delete configmap -n monitoring -l owner=helm,name=kube-prometheus-stack --ignore-not-found=true || true
           kubectl get configmaps -n monitoring -o name 2>/dev/null | grep "kube-prometheus-stack" | xargs -r kubectl delete -n monitoring --ignore-not-found=true || true
           
-          # Warte damit Cleanup abgeschlossen ist
+          # Wait for cleanup to complete
           sleep 10
           
-          # Debug: Zeige ob noch Secrets vorhanden sind
+          # Debug: Show if secrets are still present
           echo "📋 Remaining secrets after cleanup:"
           kubectl get secrets -n monitoring -o name 2>/dev/null | grep -E "(helm|kube-prometheus)" || echo "No Helm secrets found"
           
-          # KRITISCH: Erstelle und patche admission ServiceAccount VOR Helm-Deployment
-          # Helm Hooks (post-install) erstellen Jobs, die sofort laufen und ImagePullSecrets benötigen
+          # CRITICAL: Create and patch admission ServiceAccount BEFORE Helm deployment
+          # Helm Hooks (post-install) create jobs that run immediately and need ImagePullSecrets
           echo "🔐 Creating and patching admission ServiceAccount BEFORE Helm deployment..."
           if ! kubectl get serviceaccount kube-prometheus-stack-admission -n monitoring 2>/dev/null; then
             echo "  Creating kube-prometheus-stack-admission ServiceAccount..."
@@ -673,19 +673,19 @@ jobs:
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
           fi
           
-          # HINWEIS: Wir erstellen NUR den admission ServiceAccount vorher (für Helm Hooks)
-          # Alle anderen ServiceAccounts werden von Helm erstellt und dann sofort gepatcht
+          # NOTE: We create ONLY the admission ServiceAccount beforehand (for Helm Hooks)
+          # All other ServiceAccounts are created by Helm and then immediately patched
           
-          # KRITISCH: Lösche ServiceAccounts, die nicht von Helm verwaltet werden
-          # Das verhindert Import-Fehler beim ersten Deployment
+          # CRITICAL: Delete ServiceAccounts that are not managed by Helm
+          # This prevents import errors on first deployment
           echo "🧹 Cleaning up ServiceAccounts not managed by Helm (to prevent import errors)..."
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
-            # Überspringe default und admission ServiceAccount
+            # Skip default and admission ServiceAccount
             if [[ "$sa" == "default" ]] || [[ "$sa" == "kube-prometheus-stack-admission" ]]; then
               continue
             fi
             
-            # Prüfe ob ServiceAccount von Helm verwaltet wird
+            # Check if ServiceAccount is managed by Helm
             HELM_RELEASE=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || echo "")
             if [ -z "$HELM_RELEASE" ]; then
               echo "  🗑️ Deleting ServiceAccount $sa (not managed by Helm, will be recreated by Helm)..."
@@ -696,14 +696,14 @@ jobs:
           done
           echo "✅ Cleanup completed"
           
-          # KRITISCH: Erstelle Helm Post-Renderer Script, der ALLE Images nach dem Rendern auf ACR umschreibt
-          # Dies stellt sicher, dass auch verschachtelte Strukturen (wie sidecar.dashboards.image) korrekt überschrieben werden
+          # CRITICAL: Create Helm Post-Renderer script that rewrites ALL images to ACR after rendering
+          # This ensures that nested structures (like sidecar.dashboards.image) are correctly overwritten
           echo "🔧 Creating Helm Post-Renderer to rewrite all images to ACR..."
           {
             echo '#!/bin/bash'
-            echo '# Helm Post-Renderer: Ersetzt alle öffentlichen Registry-Images durch ACR'
+            echo '# Helm Post-Renderer: Replaces all public registry images with ACR'
             echo 'set -euo pipefail'
-            echo '# ACR_REGISTRY wird als Environment-Variable übergeben'
+            echo '# ACR_REGISTRY is passed as environment variable'
             echo 'ACR_REGISTRY="${ACR_REGISTRY:-}"'
             echo 'if [ -z "$ACR_REGISTRY" ]; then'
             echo '  echo "ERROR: ACR_REGISTRY environment variable is not set" >&2'
@@ -735,13 +735,13 @@ jobs:
             echo "  ⚠️ Post-Renderer test failed - output does not contain ACR_REGISTRY"
           fi
           
-          # Stelle sicher, dass ACR_REGISTRY als Environment-Variable verfügbar ist
+          # Ensure ACR_REGISTRY is available as environment variable
           export ACR_REGISTRY="${ACR_REGISTRY}"
           
-          # Erstes Deployment: Wird fehlschlagen wegen Firewall (nur ACR erlaubt)
-          # Wir deployen OHNE --wait, damit es schnell durchläuft und Pods erstellt werden
+          # First deployment: Will fail due to firewall (only ACR allowed)
+          # We deploy WITHOUT --wait, so it runs quickly and creates pods
           echo "🚀 First deployment (will fail due to firewall, but creates resources)..."
-          set +e  # Temporär Fehler ignorieren
+          set +e  # Temporarily ignore errors
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
             -f infra/addons/values/observability.acr.yaml \
@@ -756,16 +756,16 @@ jobs:
             --set alertmanager.image.tag="v0.29.0" \
             --post-renderer /tmp/helm-post-render.sh \
             --timeout 2m \
-            --wait=false 2>&1 | head -20 || true  # Zeige nur ersten Teil, dann abbrechen
-          set -e  # Fehler wieder aktivieren
+            --wait=false 2>&1 | head -20 || true  # Show only first part, then abort
+          set -e  # Re-enable errors
           
           echo "⏸️ First deployment completed (pods will fail due to firewall, but resources are created)"
           echo "🔧 Now patching ServiceAccounts and cleaning up failed pods..."
           
-          # Warte kurz, damit Pods erstellt wurden
+          # Wait briefly for pods to be created
           sleep 5
           
-          # Lösche fehlgeschlagene Post-Install-Hook-Jobs, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+          # Delete failed post-install hook jobs so they are recreated with patched ServiceAccounts
           echo "🧹 Cleaning up failed post-install hook jobs..."
           kubectl delete job -n monitoring -l app=kube-prometheus-stack-admission-patch --ignore-not-found=true || true
           kubectl delete job -n monitoring -l app=kube-prometheus-stack-admission-create --ignore-not-found=true || true
@@ -774,10 +774,10 @@ jobs:
           
           echo "✅ Helm deployment command completed. Resources are being created in the background."
           
-          # KRITISCH: Patch ALLE ServiceAccounts SOFORT nach Helm-Deployment
-          # Helm kann ServiceAccounts überschreiben, daher müssen wir sie erneut patchen
+          # CRITICAL: Patch ALL ServiceAccounts IMMEDIATELY after Helm deployment
+          # Helm can overwrite ServiceAccounts, so we must patch them again
           echo "🔐 CRITICAL: Patching all ServiceAccounts immediately after Helm deployment..."
-          sleep 2  # Kurz warten, damit Helm ServiceAccounts erstellt hat
+          sleep 2  # Wait briefly for Helm to create ServiceAccounts
           PATCHED_COUNT=0
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
             HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
@@ -796,9 +796,9 @@ jobs:
           done
           echo "✅ Immediately patched $PATCHED_COUNT ServiceAccounts after Helm deployment"
           
-          # DEBUG: Prüfe welche Images die Pods verwenden
+          # DEBUG: Check which images pods are using
           echo "🔍 DEBUG: Checking which images pods are trying to pull..."
-          sleep 5  # Warte kurz, damit Pods erstellt werden
+          sleep 5  # Wait briefly for pods to be created
           for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null | head -5); do
             echo "📦 Pod: $pod"
             IMAGE=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "N/A")
@@ -810,7 +810,7 @@ jobs:
             echo "---"
           done
           
-          # DEBUG: Prüfe ob ServiceAccounts ImagePullSecrets haben
+          # DEBUG: Check if ServiceAccounts have ImagePullSecrets
           echo "🔍 DEBUG: Checking ServiceAccount ImagePullSecrets..."
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null); do
             echo "📋 $sa:"
@@ -818,7 +818,7 @@ jobs:
             echo "  ImagePullSecrets: $IPS"
           done
           
-          # DEBUG: Zeige erwartete ACR Image-Pfade
+          # DEBUG: Show expected ACR image paths
           echo "🔍 DEBUG: Expected ACR image paths (should match pod images above):"
           if [ -n "${ACR_REGISTRY:-}" ]; then
             echo "ACR Registry: $ACR_REGISTRY"
@@ -831,11 +831,11 @@ jobs:
             echo "  - ${ACR_REGISTRY}/kube-state-metrics/kube-state-metrics:v2.10.1"
           fi
           
-          # Einfaches Cleanup: Lösche fehlgeschlagene Pods einmalig, damit sie mit gepatchten ServiceAccounts neu erstellt werden
+          # Simple cleanup: Delete failed pods once so they are recreated with patched ServiceAccounts
           echo "🧹 Cleaning up failed pods (if any)..."
-          sleep 5  # Warte kurz, damit Pods erstellt werden
+          sleep 5  # Wait briefly for pods to be created
           
-          # Lösche Pods mit ImagePullBackOff oder ErrImagePull
+          # Delete pods with ImagePullBackOff or ErrImagePull
           IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$IMAGEPULL_PODS" ]; then
             echo "🗑️ Deleting pods with ImagePullBackOff/ErrImagePull..."
@@ -847,13 +847,13 @@ jobs:
             echo "✅ No failed pods found"
           fi
           
-          # Lösche fehlgeschlagene Admission-Jobs
+          # Delete failed admission jobs
           kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
           kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
           
-          # Zweites Deployment: Jetzt sollten Pods mit gepatchten ServiceAccounts funktionieren
+          # Second deployment: Now pods with patched ServiceAccounts should work
           echo "🚀 Second deployment (with patched ServiceAccounts, should succeed)..."
-          sleep 3  # Kurz warten, damit Pods gelöscht wurden
+          sleep 3  # Wait briefly for pods to be deleted
           
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
@@ -875,11 +875,11 @@ jobs:
           
           echo "✅ Second deployment completed (Helm waited for resources with --wait)"
           
-          # Zeige Status aller Pods
+          # Show status of all pods
           echo "📊 Current pod status:"
           kubectl get pods -n monitoring -o wide || true
           
-          # Zeige Zugriffs-URLs für Dashboards
+          # Show dashboard access URLs
           echo ""
           echo "🌐 Dashboard Access URLs (via NodePort):"
           echo "=========================================="
@@ -916,14 +916,14 @@ jobs:
           # Patch ALLE ServiceAccounts, die noch nicht gepatcht sind (INKLUSIVE default)
           PATCHED_COUNT=0
           for sa in $(kubectl get serviceaccounts -n monitoring -o name 2>/dev/null | cut -d/ -f2); do
-            # Prüfe ob ServiceAccount bereits acr-pull als ImagePullSecret hat
+            # Check if ServiceAccount already has acr-pull as ImagePullSecret
             HAS_SECRET=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[?(@.name=="acr-pull")].name}' 2>/dev/null || echo "")
             if [ -z "$HAS_SECRET" ]; then
               echo "🔐 Patching ServiceAccount: $sa"
-              # Hole aktuelle ImagePullSecrets (falls vorhanden)
+              # Get current ImagePullSecrets (if present)
               CURRENT_IPS=$(kubectl get serviceaccount "$sa" -n monitoring -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
               if [ -n "$CURRENT_IPS" ]; then
-                # Füge acr-pull zu bestehenden Secrets hinzu
+                # Add acr-pull to existing secrets
                 if kubectl patch serviceaccount "$sa" -n monitoring \
                   --type='json' \
                   -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null; then
@@ -944,10 +944,10 @@ jobs:
           done
           echo "✅ Patched $PATCHED_COUNT ServiceAccounts"
           
-          # Warte kurz, damit Patch angewendet ist
+          # Wait briefly for patch to be applied
           sleep 3
           
-          # Prüfe ob fehlgeschlagene Jobs oder Pods existieren
+          # Check if failed jobs or pods exist
           echo "🔍 Checking for failed jobs and pods..."
           FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
           IMAGEPULL_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull")].metadata.name}' 2>/dev/null || echo "")
@@ -956,19 +956,19 @@ jobs:
           if [ -n "$FAILED_JOBS" ] || [ -n "$IMAGEPULL_PODS" ]; then
             echo "🔄 Restarting failed jobs and pods..."
             
-            # Lösche alle Admission-Jobs (werden automatisch neu erstellt)
+            # Delete all admission jobs (will be automatically recreated)
             for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep -E "(admission|webhook)"); do
               echo "  🗑️ Deleting job: $job"
               kubectl delete "$job" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
             done
             
-            # Lösche auch alle Pods die ImagePullBackOff oder ErrImagePull haben (nicht nur Jobs)
+            # Also delete all pods that have ImagePullBackOff or ErrImagePull (not just jobs)
             for pod in $IMAGEPULL_PODS; do
               echo "  🗑️ Deleting pod with ImagePullBackOff/ErrImagePull: $pod"
               kubectl delete pod "$pod" -n monitoring --ignore-not-found=true --grace-period=0 --force || true
             done
             
-            # KRITISCH: Lösche ALLE Pods, die keine ImagePullSecrets haben (damit sie mit gepatchten ServiceAccounts neu erstellt werden)
+            # CRITICAL: Delete ALL pods that have no ImagePullSecrets (so they are recreated with patched ServiceAccounts)
             echo "🔄 Checking for pods without ImagePullSecrets..."
             for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
               POD_IPS=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "")
@@ -978,24 +978,24 @@ jobs:
               fi
             done
             
-            # Warte kurz, damit neue Jobs/Pods gestartet werden
+            # Wait briefly for new jobs/pods to start
             sleep 5
             
-            # Zeige Status der Jobs
+            # Show job status
             echo "📊 Job status after restart:"
             kubectl get jobs -n monitoring | grep -E "(admission|webhook)" || echo "No admission jobs found"
           else
             echo "✅ No failed jobs or ImagePullBackOff pods found - all resources are healthy"
           fi
           
-          # KRITISCH: Prüfe ob Pods noch von öffentlichen Registries ziehen und patche ServiceAccounts erneut
+          # CRITICAL: Check if pods are still pulling from public registries and patch ServiceAccounts again
           echo "🔍 Checking if pods are pulling from ACR or public registries..."
-          sleep 5  # Warte kurz, damit Pods erstellt sind
+          sleep 5  # Wait briefly for pods to be created
           
-          # Finde Pods die noch von quay.io, docker.io oder anderen öffentlichen Registries ziehen
+          # Find pods that are still pulling from quay.io, docker.io or other public registries
           PUBLIC_REGISTRY_PODS=""
           for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null); do
-            # Prüfe alle Container im Pod (auch Init-Container)
+            # Check all containers in pod (including Init containers)
             CONTAINER_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[*].image}' 2>/dev/null || echo "")
             INIT_IMAGES=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.initContainers[*].image}' 2>/dev/null || echo "")
             ALL_IMAGES="$CONTAINER_IMAGES $INIT_IMAGES"
@@ -1014,7 +1014,7 @@ jobs:
             done
           done
           
-          # Wenn Pods noch von öffentlichen Registries ziehen, patche alle ServiceAccounts erneut
+          # If pods are still pulling from public registries, patch all ServiceAccounts again
           if [ -n "$PUBLIC_REGISTRY_PODS" ]; then
             echo "⚠️ Found pods pulling from public registries. Patching all ServiceAccounts again..."
             PATCHED_AGAIN=0
@@ -1035,7 +1035,7 @@ jobs:
             done
             echo "✅ Repatched $PATCHED_AGAIN ServiceAccounts"
             
-            # Lösche Pods die von öffentlichen Registries ziehen, damit sie neu erstellt werden
+            # Delete pods pulling from public registries so they are recreated
             echo "🗑️ Deleting pods pulling from public registries..."
             for pod in $PUBLIC_REGISTRY_PODS; do
               echo "  🗑️ Deleting pod: $pod"
@@ -1048,18 +1048,18 @@ jobs:
             echo "✅ All pods are pulling from ACR"
           fi
           
-          # Finaler Status-Check
+          # Final status check
           echo "📊 Final pod status:"
           kubectl get pods -n monitoring -o wide || true
           
-          # Zeige welche Images die Pods verwenden
+          # Show which images pods are using
           echo "📦 Pod images (should all be from ACR):"
           for pod in $(kubectl get pods -n monitoring -o name 2>/dev/null | head -10); do
             IMAGE=$(kubectl get $pod -n monitoring -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "N/A")
             echo "  $pod: $IMAGE"
           done
           
-          # Zeige ServiceAccounts Status
+          # Show ServiceAccounts status
           echo "📊 ServiceAccounts with imagePullSecrets:"
           kubectl get serviceaccounts -n monitoring -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.imagePullSecrets[*].name}{"\n"}{end}' || true
 
@@ -1080,22 +1080,22 @@ jobs:
               echo "🐛 DEBUG: Pod $pod"
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               
-              # Zeige Pod Details
+              # Show pod details
               echo "📋 Pod Details:"
               kubectl get pod "$pod" -n monitoring -o wide || true
               
-              # Zeige Pod Events
+              # Show pod events
               echo ""
               echo "📋 Pod Events:"
               kubectl describe pod "$pod" -n monitoring | grep -A 20 "Events:" || true
               
-              # Zeige Container Images
+              # Show container images
               echo ""
               echo "📦 Container Images:"
               kubectl get pod "$pod" -n monitoring -o jsonpath='{range .spec.containers[*]}{.name}{": "}{.image}{"\n"}{end}' || true
               kubectl get pod "$pod" -n monitoring -o jsonpath='{range .spec.initContainers[*]}{.name}{" (init): "}{.image}{"\n"}{end}' || true
               
-              # Zeige ServiceAccount und ImagePullSecrets
+              # Show ServiceAccount and ImagePullSecrets
               echo ""
               echo "🔐 ServiceAccount Info:"
               SA=$(kubectl get pod "$pod" -n monitoring -o jsonpath='{.spec.serviceAccountName}' 2>/dev/null || echo "N/A")
@@ -1107,7 +1107,7 @@ jobs:
                 echo "  ServiceAccount ImagePullSecrets: $SA_IPS"
               fi
               
-              # Versuche Logs zu sammeln (falls Container gestartet wurden)
+              # Try to collect logs (if containers were started)
               echo ""
               echo "📋 Container Logs (if available):"
               for container in $(kubectl get pod "$pod" -n monitoring -o jsonpath='{.spec.containers[*].name}' 2>/dev/null); do
@@ -1115,7 +1115,7 @@ jobs:
                 kubectl logs "$pod" -n monitoring -c "$container" --tail=50 2>&1 || echo "    (logs not available)"
               done
               
-              # Zeige Image Pull Error Details
+              # Show image pull error details
               echo ""
               echo "🔍 Image Pull Status:"
               kubectl get pod "$pod" -n monitoring -o jsonpath='{range .status.containerStatuses[*]}{.name}{": "}{.state.waiting.reason}{" - "}{.state.waiting.message}{"\n"}{end}' || true
@@ -1137,12 +1137,12 @@ jobs:
               echo "🐛 DEBUG: Job $job"
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               
-              # Zeige Job Details
+              # Show job details
               echo "📋 Job Details:"
               kubectl get job "$job" -n monitoring -o wide || true
               kubectl describe job "$job" -n monitoring || true
               
-              # Zeige Job Pod Logs
+              # Show job pod logs
               echo ""
               echo "📋 Job Pod Logs:"
               JOB_PODS=$(kubectl get pods -n monitoring -l job-name="$job" -o name 2>/dev/null || echo "")
@@ -1159,7 +1159,7 @@ jobs:
             echo "✅ No failed jobs found"
           fi
           
-          # 3. Zeige Terminating Pods (für Info)
+          # 3. Show terminating pods (for info)
           echo ""
           echo "📋 Terminating pods (will be cleaned up):"
           TERMINATING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null || echo "")
@@ -1180,7 +1180,7 @@ jobs:
           set -euo pipefail
           echo "🧹 Cleaning up failed and terminated resources..."
           
-          # 1. Lösche alle Terminating Pods
+          # 1. Delete all terminating pods
           echo "🗑️ Cleaning up Terminating pods..."
           TERMINATING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$TERMINATING_PODS" ]; then
@@ -1190,7 +1190,7 @@ jobs:
             done
           fi
           
-          # 2. Lösche alle Pods mit Error/ImagePullBackOff/ErrImagePull Status
+          # 2. Delete all pods with Error/ImagePullBackOff/ErrImagePull status
           echo "🗑️ Cleaning up pods with Error/ImagePullBackOff/ErrImagePull status..."
           ERROR_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Failed" || @.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff" || @.status.containerStatuses[0].state.waiting.reason=="ErrImagePull" || @.status.containerStatuses[0].state.terminated.reason=="Error")].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$ERROR_PODS" ]; then
@@ -1200,7 +1200,7 @@ jobs:
             done
           fi
           
-          # 3. Lösche alle fehlgeschlagenen Jobs
+          # 3. Delete all failed jobs
           echo "🗑️ Cleaning up failed jobs..."
           FAILED_JOBS=$(kubectl get jobs -n monitoring -o jsonpath='{.items[?(@.status.failed>0)].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$FAILED_JOBS" ]; then
@@ -1210,7 +1210,7 @@ jobs:
             done
           fi
           
-          # 4. Lösche alle Completed Jobs (die nicht mehr benötigt werden, besonders admission/webhook)
+          # 4. Delete all completed jobs (no longer needed, especially admission/webhook)
           echo "🗑️ Cleaning up completed admission/webhook jobs..."
           for job in $(kubectl get jobs -n monitoring -o name 2>/dev/null | grep -E "(admission|webhook|patch)"); do
             JOB_STATUS=$(kubectl get $job -n monitoring -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
@@ -1220,7 +1220,7 @@ jobs:
             fi
           done
           
-          # 5. Lösche alle Pods im CrashLoopBackOff Status
+          # 5. Delete all pods in CrashLoopBackOff status
           echo "🗑️ Cleaning up CrashLoopBackOff pods..."
           CRASHLOOP_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff")].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$CRASHLOOP_PODS" ]; then
@@ -1230,24 +1230,24 @@ jobs:
             done
           fi
           
-          # 6. Lösche alle Pending Pods die länger als 5 Minuten warten (wahrscheinlich hängend)
+          # 6. Delete all pending pods waiting longer than 5 minutes (probably stuck)
           echo "🗑️ Cleaning up stuck pending pods..."
           PENDING_PODS=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Pending")].metadata.name}' 2>/dev/null || echo "")
           if [ -n "$PENDING_PODS" ]; then
             for pod in $PENDING_PODS; do
               POD_AGE=$(kubectl get pod "$pod" -n monitoring -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
               if [ -n "$POD_AGE" ]; then
-                # Prüfe ob Pod älter als 5 Minuten ist (vereinfacht - prüft nur ob er existiert)
+                # Check if pod is older than 5 minutes (simplified - only checks if it exists)
                 echo "  🗑️ Deleting pending pod (may be stuck): $pod"
                 kubectl delete pod "$pod" -n monitoring --grace-period=0 --force --ignore-not-found=true || true
               fi
             done
           fi
           
-          # 7. Warte kurz, damit Cleanup abgeschlossen ist
+          # 7. Wait briefly for cleanup to complete
           sleep 5
           
-          # 8. Finale Status-Anzeige
+          # 8. Final status display
           echo "📊 Final cleanup status:"
           TERMINATING_COUNT=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.metadata.deletionTimestamp!=null)].metadata.name}' 2>/dev/null | wc -w || echo 0)
           ERROR_COUNT=$(kubectl get pods -n monitoring -o jsonpath='{.items[?(@.status.phase=="Failed")].metadata.name}' 2>/dev/null | wc -w || echo 0)

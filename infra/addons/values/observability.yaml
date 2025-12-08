@@ -2,7 +2,7 @@ grafana:
   adminPassword: admin
   service:
     type: NodePort
-    nodePort: 30000  # Grafana auf Port 30000 (http://<HOST_IP>:30000)
+    nodePort: 30000  # Grafana on port 30000 (http://<HOST_IP>:30000)
   ingress:
     enabled: false
   image:
@@ -22,10 +22,10 @@ grafana:
         registry: ""  # Will be set via --set in workflow
 
 prometheus:
-  # Service für direkten Zugriff auf Prometheus (Haupt-Service)
+  # Service for direct access to Prometheus (main service)
   service:
     type: NodePort
-    nodePort: 30001  # Prometheus auf Port 30001 (http://<HOST_IP>:30001)
+    nodePort: 30001  # Prometheus on port 30001 (http://<HOST_IP>:30001)
   prometheusSpec:
     retention: 7d
     image:
@@ -37,7 +37,7 @@ alertmanager:
   enabled: true
   service:
     type: NodePort
-    nodePort: 30002  # Alertmanager auf Port 30002 (http://<HOST_IP>:30002)
+    nodePort: 30002  # Alertmanager on port 30002 (http://<HOST_IP>:30002)
   image:
     repository: quay.io/prometheus/alertmanager
     tag: "v0.29.0"  # Helm Chart default version

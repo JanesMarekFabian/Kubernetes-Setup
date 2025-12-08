@@ -1,1 +1,21 @@
+# Project-specific
 Runnerbiebel.txt
+
+# Generated files
+image-map.txt
+infra/addons/values/*.acr.yaml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
