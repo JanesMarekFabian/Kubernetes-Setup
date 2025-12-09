@@ -739,7 +739,7 @@ jobs:
           export ACR_REGISTRY="${ACR_REGISTRY}"
           
           # First deployment: Will fail due to firewall (only ACR allowed)
-          # We deploy WITHOUT --wait, so it runs quickly and creates pods
+          # We deploy WITHOUT --wait and WITHOUT hooks, so it runs quickly and creates pods
           echo "🚀 First deployment (will fail due to firewall, but creates resources)..."
           set +e  # Temporarily ignore errors
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
@@ -755,8 +755,9 @@ jobs:
             --set alertmanager.image.repository="prometheus/alertmanager" \
             --set alertmanager.image.tag="v0.29.0" \
             --post-renderer /tmp/helm-post-render.sh \
-            --timeout 2m \
-            --wait=false 2>&1 | head -20 || true  # Show only first part, then abort
+            --timeout 1m \
+            --wait=false \
+            --no-hooks 2>&1 | head -20 || true  # Show only first part, then abort
           set -e  # Re-enable errors
           
           echo "⏸️ First deployment completed (pods will fail due to firewall, but resources are created)"
@@ -847,13 +848,17 @@ jobs:
             echo "✅ No failed pods found"
           fi
           
-          # Delete failed admission jobs
-          kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
-          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true || true
+          # Delete failed admission jobs and pods aggressively (to prevent hook timeouts)
+          echo "🧹 Aggressively cleaning up admission webhook jobs and pods..."
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
+          kubectl delete jobs -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
+          kubectl delete pods -n monitoring -l app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
+          kubectl delete pods -n monitoring -l app.kubernetes.io/name=kube-prometheus-stack,app.kubernetes.io/component=admission-webhook --ignore-not-found=true --grace-period=0 --force || true
+          sleep 5  # Wait for cleanup to complete
           
           # Second deployment: Now pods with patched ServiceAccounts should work
-          echo "🚀 Second deployment (with patched ServiceAccounts, should succeed)..."
-          sleep 3  # Wait briefly for pods to be deleted
+          # Use --no-hooks to skip admission webhook jobs (they fail anyway and we've already patched ServiceAccounts)
+          echo "🚀 Second deployment (with patched ServiceAccounts, skipping hooks to avoid timeout)..."
           
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
             -n monitoring \
@@ -868,9 +873,10 @@ jobs:
             --set alertmanager.image.repository="prometheus/alertmanager" \
             --set alertmanager.image.tag="v0.29.0" \
             --post-renderer /tmp/helm-post-render.sh \
-            --timeout 10m \
-            --wait --wait-for-jobs=false || {
-              echo "⚠️ Helm deployment completed with warnings (some jobs may have failed)"
+            --timeout 5m \
+            --wait \
+            --no-hooks || {
+              echo "⚠️ Helm deployment completed with warnings (some resources may still be deploying)"
             }
           
           echo "✅ Second deployment completed (Helm waited for resources with --wait)"
