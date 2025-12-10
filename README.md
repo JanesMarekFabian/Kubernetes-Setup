@@ -145,5 +145,4 @@ The workflow automatically removes Traefik (k3s default) to avoid port conflicts
 - Edit values files in `infra/addons/values/`
 - Changes trigger automatic deployment on push to `main`
 
-
-
+Beta Version!
