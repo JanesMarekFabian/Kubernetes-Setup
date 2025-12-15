@@ -43,7 +43,7 @@ def get_static_images() -> List[Tuple[str, str]]:
     metrics_version = get_latest_metrics_server_version()
     return [
         ("registry.k8s.io/metrics-server/metrics-server", metrics_version),
-        ("docker.io/rancher/local-path-provisioner", "v0.0.26"),
+        ("docker.io/rancher/local-path-provisioner", "v0.0.31"),  # Updated to match k3s default
         ("docker.io/library/busybox", "1.36"),  # For local-path-provisioner helper pods
     ]
 

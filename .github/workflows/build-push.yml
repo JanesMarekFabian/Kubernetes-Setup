@@ -440,6 +440,74 @@ jobs:
             echo "ℹ️ Local Path Provisioner not found, skipping ImagePullSecret configuration"
           fi
 
+      - name: Patch Provisioner Deployment Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Patch deployment to use ACR image instead of Docker Hub (for both namespaces)
+          
+          patch_deployment_image() {
+            local NAMESPACE=$1
+            
+            echo "🔄 Patching provisioner deployment in $NAMESPACE to use ACR image..."
+            
+            # Check if deployment exists
+            if ! kubectl get deployment local-path-provisioner -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "⚠️ Deployment not found in $NAMESPACE, skipping"
+              return
+            fi
+            
+            # Get current image
+            CURRENT_IMAGE=$(kubectl get deployment local-path-provisioner -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+            
+            if [ -z "$CURRENT_IMAGE" ]; then
+              echo "⚠️ Could not determine current image, skipping"
+              return
+            fi
+            
+            echo "Current image: $CURRENT_IMAGE"
+            
+            # Check if already using ACR image
+            if echo "$CURRENT_IMAGE" | grep -q "${ACR_REGISTRY}"; then
+              echo "✅ Deployment already uses ACR image"
+              return
+            fi
+            
+            # Extract version from current image (e.g., v0.0.31 or v0.0.26)
+            VERSION=$(echo "$CURRENT_IMAGE" | sed -n 's/.*:\(v[0-9.]*\)/\1/p' || echo "v0.0.31")
+            ACR_IMAGE="${ACR_REGISTRY}/rancher/local-path-provisioner:${VERSION}"
+            
+            echo "Patching to use: $ACR_IMAGE"
+            
+            # Patch deployment
+            kubectl set image deployment/local-path-provisioner \
+              local-path-provisioner="$ACR_IMAGE" \
+              -n "$NAMESPACE"
+            
+            echo "✅ Deployment patched to use ACR image"
+            
+            # Wait for rollout
+            echo "⏳ Waiting for deployment rollout..."
+            kubectl rollout status deployment/local-path-provisioner -n "$NAMESPACE" --timeout=3m || {
+              echo "⚠️ Rollout timeout, but image is patched"
+            }
+          }
+          
+          # Patch for kube-system (k3s)
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            patch_deployment_image "kube-system"
+          fi
+          
+          # Patch for local-path-storage (manual deployment)
+          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            patch_deployment_image "local-path-storage"
+          fi
+          
+          if ! kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1 && \
+             ! kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            echo "ℹ️ Local Path Provisioner not found, skipping deployment image patch"
+          fi
+
       - name: Configure Helper-Pod Image
         shell: bash
         run: |
