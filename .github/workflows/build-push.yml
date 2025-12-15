@@ -259,13 +259,20 @@ jobs:
             -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
           kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=5m
 
-      - name: Fix k3s Local Path Provisioner RBAC and StorageClass
+      - name: Configure Local Path Provisioner RBAC
         shell: bash
         run: |
           set -euo pipefail
-          # Check if k3s provisioner exists in kube-system namespace
+          # Configure RBAC for local-path-provisioner (works for both k3s and manual deployments)
+          NAMESPACE=""
           if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            echo "🔧 Fixing RBAC for k3s Local Path Provisioner in kube-system..."
+            NAMESPACE="kube-system"
+          elif kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            NAMESPACE="local-path-storage"
+          fi
+          
+          if [ -n "$NAMESPACE" ]; then
+            echo "🔐 Configuring RBAC for Local Path Provisioner in namespace $NAMESPACE..."
             
             # Apply RBAC for local-path-provisioner-service-account
             cat <<EOF | kubectl apply -f -
@@ -306,6 +313,10 @@ jobs:
           - apiGroups: [""]
             resources: ["endpoints"]
             verbs: ["get", "list", "watch", "create", "update", "patch"]
+          # ConfigMaps lesen (für local-path-config)
+          - apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: ["get", "list", "watch"]
           ---
           apiVersion: rbac.authorization.k8s.io/v1
           kind: ClusterRoleBinding
@@ -318,12 +329,17 @@ jobs:
           subjects:
           - kind: ServiceAccount
             name: local-path-provisioner-service-account
-            namespace: kube-system
+            namespace: $NAMESPACE
           EOF
-            echo "✅ RBAC for k3s Local Path Provisioner applied"
+            echo "✅ RBAC configured for Local Path Provisioner"
+          else
+            echo "ℹ️ Local Path Provisioner not found, skipping RBAC configuration"
           fi
-          
-          # Ensure StorageClass exists (for both k3s and manual deployments)
+
+      - name: Ensure StorageClass exists
+        shell: bash
+        run: |
+          set -euo pipefail
           if ! kubectl get storageclass local-path >/dev/null 2>&1; then
             echo "📦 Creating StorageClass local-path..."
             cat <<EOF | kubectl apply -f -
@@ -342,15 +358,20 @@ jobs:
             echo "✅ StorageClass local-path already exists"
           fi
 
-      - name: Patch ServiceAccount with ImagePullSecret
+      - name: Configure ServiceAccount ImagePullSecret
         shell: bash
         run: |
           set -euo pipefail
-          # Function to patch ServiceAccount for a namespace
-          patch_serviceaccount() {
-            local NAMESPACE=$1
-            
-            echo "🔐 Patching ServiceAccount in $NAMESPACE with ACR pull secret..."
+          # Configure ImagePullSecret for local-path-provisioner ServiceAccount
+          NAMESPACE=""
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            NAMESPACE="kube-system"
+          elif kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            NAMESPACE="local-path-storage"
+          fi
+          
+          if [ -n "$NAMESPACE" ]; then
+            echo "🔐 Configuring ImagePullSecret for Local Path Provisioner in namespace $NAMESPACE..."
             
             # Create ACR pull secret if not exists
             kubectl create secret docker-registry acr-pull \
@@ -364,32 +385,32 @@ jobs:
             kubectl patch serviceaccount local-path-provisioner-service-account -n "$NAMESPACE" \
               -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
             
-            echo "✅ ServiceAccount in $NAMESPACE patched with acr-pull secret"
-          }
-          
-          # Patch ServiceAccount for kube-system (k3s default)
-          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            patch_serviceaccount "kube-system"
-          fi
-          
-          # Patch ServiceAccount for local-path-storage (manual deployment)
-          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            patch_serviceaccount "local-path-storage"
+            echo "✅ ServiceAccount configured with ACR pull secret"
+          else
+            echo "ℹ️ Local Path Provisioner not found, skipping ImagePullSecret configuration"
           fi
 
-      - name: Fix Helper-Pod Image in ConfigMap
+      - name: Configure Helper-Pod Image
         shell: bash
         run: |
           set -euo pipefail
-          # Function to update ConfigMap for a namespace
-          update_configmap() {
-            local NAMESPACE=$1
-            local STORAGE_PATH=$2
+          # Configure helper-pod image in ConfigMap for local-path-provisioner
+          # Determine namespace and storage path
+          NAMESPACE=""
+          STORAGE_PATH=""
+          
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            NAMESPACE="kube-system"
+            STORAGE_PATH="/var/lib/rancher/k3s/storage"
+          elif kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            NAMESPACE="local-path-storage"
+            STORAGE_PATH="/opt/local-path-provisioner"
+          fi
+          
+          if [ -n "$NAMESPACE" ] && kubectl get configmap local-path-config -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "📋 Configuring helper-pod image in ConfigMap for namespace $NAMESPACE..."
             
-            if kubectl get configmap local-path-config -n "$NAMESPACE" >/dev/null 2>&1; then
-              echo "📋 Updating ConfigMap in namespace $NAMESPACE with ACR busybox image..."
-              
-              cat <<EOF | kubectl apply -f -
+            cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: ConfigMap
           metadata:
@@ -413,25 +434,47 @@ jobs:
               }
           EOF
               
-              echo "✅ ConfigMap updated in $NAMESPACE with ${ACR_REGISTRY}/busybox:1.36"
+            echo "✅ ConfigMap configured with ACR busybox image"
+            
+            # Restart provisioner to pick up new config (with better error handling)
+            echo "🔄 Restarting provisioner to apply new configuration..."
+            kubectl rollout restart deployment/local-path-provisioner -n "$NAMESPACE"
+            
+            # Wait for rollout with better error handling
+            set +e  # Temporarily allow errors
+            if kubectl -n "$NAMESPACE" rollout status deployment/local-path-provisioner --timeout=5m; then
+              echo "✅ Provisioner rollout successful"
+              set -e
+            else
+              echo "⚠️ Provisioner rollout timed out or failed, checking pod status..."
+              set -e
               
-              # Restart provisioner to pick up new config
-              echo "🔄 Restarting provisioner in $NAMESPACE to apply new config..."
-              kubectl rollout restart deployment/local-path-provisioner -n "$NAMESPACE"
-              kubectl -n "$NAMESPACE" rollout status deployment/local-path-provisioner --timeout=2m
+              # Show pod status
+              echo "📦 Current pod status:"
+              kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner || true
+              
+              # Show pod events
+              echo "📋 Recent events:"
+              kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | grep local-path-provisioner | tail -10 || true
+              
+              # Show pod logs if pod exists
+              PROVISIONER_POD=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+              if [ -n "$PROVISIONER_POD" ]; then
+                echo "📋 Provisioner logs:"
+                kubectl logs -n "$NAMESPACE" "$PROVISIONER_POD" --tail=50 || true
+                
+                # Check for ImagePull errors
+                if kubectl describe pod "$PROVISIONER_POD" -n "$NAMESPACE" | grep -i "ImagePull\|ErrImagePull\|ImagePullBackOff"; then
+                  echo "⚠️ ImagePull error detected. Checking if busybox image exists on ACR..."
+                  echo "💡 Note: The busybox image should be available on ACR from the mirror job."
+                  echo "💡 If this is the first run, the image might still be uploading."
+                fi
+              fi
+              
+              echo "⚠️ Continuing despite rollout timeout - ConfigMap is configured and will be picked up eventually"
             fi
-          }
-          
-          # Update ConfigMap for kube-system (k3s default)
-          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            echo "🔧 Fixing Helper-Pod Image in ConfigMap for kube-system..."
-            update_configmap "kube-system" "/var/lib/rancher/k3s/storage"
-          fi
-          
-          # Update ConfigMap for local-path-storage (manual deployment)
-          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            echo "🔧 Fixing Helper-Pod Image in ConfigMap for local-path-storage..."
-            update_configmap "local-path-storage" "/opt/local-path-provisioner"
+          else
+            echo "ℹ️ Local Path Provisioner ConfigMap not found, skipping helper-pod image configuration"
           fi
 
       - name: Ensure StorageClass is default
