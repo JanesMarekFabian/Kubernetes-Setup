@@ -44,6 +44,7 @@ def get_static_images() -> List[Tuple[str, str]]:
     return [
         ("registry.k8s.io/metrics-server/metrics-server", metrics_version),
         ("docker.io/rancher/local-path-provisioner", "v0.0.26"),
+        ("docker.io/library/busybox", "1.36"),  # For local-path-provisioner helper pods
     ]
 
 

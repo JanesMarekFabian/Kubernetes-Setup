@@ -274,24 +274,35 @@ jobs:
           metadata:
             name: local-path-provisioner-role
           rules:
-          - apiGroups: [""]
-            resources: ["nodes"]
-            verbs: ["get", "list"]
-          - apiGroups: [""]
-            resources: ["persistentvolumes"]
-            verbs: ["get", "list", "watch", "create", "delete"]
-          - apiGroups: [""]
-            resources: ["persistentvolumeclaims"]
-            verbs: ["get", "list", "watch", "update"]
+          # Helper-Pods erstellen und verwalten
           - apiGroups: [""]
             resources: ["pods"]
             verbs: ["create", "delete", "get", "list", "watch"]
+          # Pod-Logs lesen (für Debugging)
+          - apiGroups: [""]
+            resources: ["pods/log"]
+            verbs: ["get", "list"]
+          # PersistentVolumes verwalten
+          - apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "create", "delete", "patch"]
+          # PersistentVolumeClaims überwachen
+          - apiGroups: [""]
+            resources: ["persistentvolumeclaims"]
+            verbs: ["get", "list", "watch", "update"]
+          # StorageClasses lesen
           - apiGroups: ["storage.k8s.io"]
             resources: ["storageclasses"]
             verbs: ["get", "list", "watch"]
+          # Nodes lesen (um zu wissen, wo Volumes erstellt werden)
+          - apiGroups: [""]
+            resources: ["nodes"]
+            verbs: ["get", "list"]
+          # Events für Logging
           - apiGroups: [""]
             resources: ["events"]
             verbs: ["create", "patch"]
+          # Endpoints (für Service-Discovery)
           - apiGroups: [""]
             resources: ["endpoints"]
             verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -329,6 +340,98 @@ jobs:
             echo "✅ StorageClass local-path created"
           else
             echo "✅ StorageClass local-path already exists"
+          fi
+
+      - name: Patch ServiceAccount with ImagePullSecret
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Function to patch ServiceAccount for a namespace
+          patch_serviceaccount() {
+            local NAMESPACE=$1
+            
+            echo "🔐 Patching ServiceAccount in $NAMESPACE with ACR pull secret..."
+            
+            # Create ACR pull secret if not exists
+            kubectl create secret docker-registry acr-pull \
+              --docker-server="${ACR_REGISTRY}" \
+              --docker-username="${ACR_USERNAME}" \
+              --docker-password="${ACR_PASSWORD}" \
+              -n "$NAMESPACE" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            
+            # Patch ServiceAccount
+            kubectl patch serviceaccount local-path-provisioner-service-account -n "$NAMESPACE" \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+            
+            echo "✅ ServiceAccount in $NAMESPACE patched with acr-pull secret"
+          }
+          
+          # Patch ServiceAccount for kube-system (k3s default)
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            patch_serviceaccount "kube-system"
+          fi
+          
+          # Patch ServiceAccount for local-path-storage (manual deployment)
+          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            patch_serviceaccount "local-path-storage"
+          fi
+
+      - name: Fix Helper-Pod Image in ConfigMap
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Function to update ConfigMap for a namespace
+          update_configmap() {
+            local NAMESPACE=$1
+            local STORAGE_PATH=$2
+            
+            if kubectl get configmap local-path-config -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "📋 Updating ConfigMap in namespace $NAMESPACE with ACR busybox image..."
+              
+              cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: local-path-config
+            namespace: $NAMESPACE
+          data:
+            config.json: |-
+              {
+                "nodePathMap":[
+                  {
+                    "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
+                    "paths":["$STORAGE_PATH"]
+                  }
+                ],
+                "setup": "#!/bin/sh\nset -eu\nmkdir -p \"\$VOL_DIR\"\nchmod 0777 \"\$VOL_DIR\"\n",
+                "teardown": "#!/bin/sh\nset -eu\nrm -rf \"\$VOL_DIR\"\n",
+                "helperPod": {
+                  "image": "${ACR_REGISTRY}/busybox:1.36",
+                  "imagePullPolicy": "IfNotPresent"
+                }
+              }
+          EOF
+              
+              echo "✅ ConfigMap updated in $NAMESPACE with ${ACR_REGISTRY}/busybox:1.36"
+              
+              # Restart provisioner to pick up new config
+              echo "🔄 Restarting provisioner in $NAMESPACE to apply new config..."
+              kubectl rollout restart deployment/local-path-provisioner -n "$NAMESPACE"
+              kubectl -n "$NAMESPACE" rollout status deployment/local-path-provisioner --timeout=2m
+            fi
+          }
+          
+          # Update ConfigMap for kube-system (k3s default)
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            echo "🔧 Fixing Helper-Pod Image in ConfigMap for kube-system..."
+            update_configmap "kube-system" "/var/lib/rancher/k3s/storage"
+          fi
+          
+          # Update ConfigMap for local-path-storage (manual deployment)
+          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            echo "🔧 Fixing Helper-Pod Image in ConfigMap for local-path-storage..."
+            update_configmap "local-path-storage" "/opt/local-path-provisioner"
           fi
 
       - name: Ensure StorageClass is default
