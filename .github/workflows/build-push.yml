@@ -575,50 +575,101 @@ jobs:
             local NAMESPACE=$1
             
             echo "🔄 Restarting provisioner in $NAMESPACE to apply ConfigMap changes..."
+            echo "💡 The provisioner reads ConfigMap only on startup, so we need to force delete the pod"
             
-            # Cleanup: Delete failed helper pods before restart
+            # Step 1: Get current provisioner pod
+            CURRENT_POD=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -z "$CURRENT_POD" ]; then
+              echo "⚠️ No provisioner pod found in $NAMESPACE, skipping restart"
+              return
+            fi
+            
+            CURRENT_STATUS=$(kubectl get pod "$CURRENT_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            echo "Current pod: $CURRENT_POD (Status: $CURRENT_STATUS)"
+            
+            # Step 2: Cleanup failed helper pods before restart
             echo "🧹 Cleaning up failed helper pods..."
             kubectl get pods -n "$NAMESPACE" 2>/dev/null | grep helper-pod | awk '{print $1}' | \
               xargs -r kubectl delete pod -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null || true
             
-            # Restart Deployment
-            kubectl rollout restart deployment/local-path-provisioner -n "$NAMESPACE"
+            # Step 3: Force delete provisioner pod (more reliable than rollout restart)
+            # This ensures the pod reads the ConfigMap fresh on startup
+            echo "🗑️ Force deleting provisioner pod to force ConfigMap reload..."
+            kubectl delete pod "$CURRENT_POD" -n "$NAMESPACE" --grace-period=0 --force || true
             
-            # Wait for rollout with better error handling
+            # Step 4: Wait for new pod to be created and ready
+            echo "⏳ Waiting for new provisioner pod to be created and ready..."
+            sleep 5  # Brief wait for pod deletion
+            
+            # Wait for new pod to exist
+            for i in {1..12}; do
+              NEW_POD=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+              if [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$CURRENT_POD" ]; then
+                echo "✅ New pod created: $NEW_POD"
+                break
+              fi
+              echo "  Waiting for new pod... (attempt $i/12)"
+              sleep 5
+            done
+            
+            if [ -z "$NEW_POD" ] || [ "$NEW_POD" = "$CURRENT_POD" ]; then
+              echo "⚠️ New pod not created, checking deployment status..."
+              kubectl get deployment local-path-provisioner -n "$NAMESPACE" || true
+              return
+            fi
+            
+            # Wait for pod to be ready
+            echo "⏳ Waiting for pod $NEW_POD to be ready..."
             set +e  # Temporarily allow errors
-            if kubectl rollout status deployment/local-path-provisioner -n "$NAMESPACE" --timeout=5m; then
-              echo "✅ Provisioner rollout successful in $NAMESPACE"
+            if kubectl wait --for=condition=ready pod "$NEW_POD" -n "$NAMESPACE" --timeout=5m; then
+              echo "✅ Provisioner pod is ready: $NEW_POD"
               set -e
             else
-              echo "⚠️ Provisioner rollout timed out or failed in $NAMESPACE, checking status..."
+              echo "⚠️ Provisioner pod not ready after 5 minutes, checking status..."
               set -e
               
               # Show pod status
               echo "📦 Current pod status:"
-              kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner || true
+              kubectl get pod "$NEW_POD" -n "$NAMESPACE" || true
               
               # Show pod events
               echo "📋 Recent events:"
-              kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | grep local-path-provisioner | tail -10 || true
+              kubectl get events -n "$NAMESPACE" --field-selector involvedObject.name="$NEW_POD" --sort-by='.lastTimestamp' | tail -10 || true
               
-              # Show pod logs if pod exists
-              PROVISIONER_POD=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-              if [ -n "$PROVISIONER_POD" ]; then
-                echo "📋 Provisioner logs:"
-                kubectl logs -n "$NAMESPACE" "$PROVISIONER_POD" --tail=50 || true
-                
-                # Check for ImagePull errors
-                if kubectl describe pod "$PROVISIONER_POD" -n "$NAMESPACE" | grep -i "ImagePull\|ErrImagePull\|ImagePullBackOff"; then
-                  echo "⚠️ ImagePull error detected. Checking if busybox image exists on ACR..."
-                  echo "💡 Note: The busybox image should be available on ACR from the mirror job."
-                fi
+              # Show pod logs
+              echo "📋 Provisioner logs:"
+              kubectl logs -n "$NAMESPACE" "$NEW_POD" --tail=50 2>/dev/null || true
+              
+              # Check for ImagePull errors
+              if kubectl describe pod "$NEW_POD" -n "$NAMESPACE" | grep -qi "ImagePull\|ErrImagePull\|ImagePullBackOff"; then
+                echo "⚠️ ImagePull error detected. The provisioner image might not be available on ACR."
+                echo "💡 Note: The provisioner image should be available on ACR from the mirror job."
               fi
               
-              echo "⚠️ Continuing despite rollout timeout - ConfigMap is configured and will be picked up eventually"
+              # Check if pod is at least running (even if not ready)
+              POD_PHASE=$(kubectl get pod "$NEW_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+              if [ "$POD_PHASE" = "Running" ]; then
+                echo "⚠️ Pod is running but not ready - ConfigMap should be loaded"
+              else
+                echo "⚠️ Pod is not running - ConfigMap might not be loaded yet"
+              fi
             fi
             
             # Wait briefly for provisioner to fully start
             sleep 5
+            
+            # CRITICAL: Delete all existing helper pods so new ones are created with updated ConfigMap
+            echo "🧹 Deleting all existing helper pods to force recreation with new ConfigMap..."
+            HELPER_PODS=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep helper-pod || echo "")
+            if [ -n "$HELPER_PODS" ]; then
+              echo "Found helper pods to delete:"
+              echo "$HELPER_PODS"
+              echo "$HELPER_PODS" | xargs -r kubectl delete -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null || true
+              echo "✅ Old helper pods deleted"
+              sleep 3  # Wait briefly for cleanup
+            else
+              echo "ℹ️ No existing helper pods found"
+            fi
             
             # Validate: Check provisioner logs for errors
             echo "✅ Validating provisioner configuration in $NAMESPACE..."
