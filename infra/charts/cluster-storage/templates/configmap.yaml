@@ -19,17 +19,11 @@ data:
         }
       ],
       "setup": {{ .Values.localPathProvisioner.configMap.setup | toJson }},
-      "teardown": {{ .Values.localPathProvisioner.configMap.teardown | toJson }}
+      "teardown": {{ .Values.localPathProvisioner.configMap.teardown | toJson }},
+      "helperPod": {
+        "image": "{{ .Values.localPathProvisioner.configMap.helperPod.image }}",
+        "imagePullPolicy": "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
+      }
     }
-  helperPod.yaml: |-
-    apiVersion: v1
-    kind: Pod
-    metadata:
-      generateName: helper-pod-create-pvc-
-    spec:
-      containers:
-      - name: helper-pod
-        image: "{{ .Values.localPathProvisioner.configMap.helperPod.image }}"
-        imagePullPolicy: "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
 {{- end }}
 
