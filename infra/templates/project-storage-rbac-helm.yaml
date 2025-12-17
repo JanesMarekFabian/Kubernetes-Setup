@@ -1,0 +1,27 @@
+# Helm template for project-specific storage RBAC
+# Include this in your project's Helm chart templates/
+# Usage in values.yaml:
+#   storageAccess:
+#     enabled: true
+#     serviceAccount: your-service-account-name
+
+{{- if .Values.storageAccess.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: local-path-config-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/component: storage-access
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- include "your-chart.labels" . | nindent 4 }}
+roleRef:
+  kind: ClusterRole
+  name: local-path-config-reader
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.storageAccess.serviceAccount | default "default" }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+

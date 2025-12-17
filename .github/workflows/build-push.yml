@@ -6,6 +6,8 @@ on:
     paths:
       - 'infra/addons/**'
       - 'infra/rbac/**'
+      - 'infra/charts/**'
+      - 'infra/templates/**'
       - '.github/workflows/build-push.yml'
   workflow_dispatch:
 
@@ -508,67 +510,61 @@ jobs:
             echo "ℹ️ Local Path Provisioner not found, skipping deployment image patch"
           fi
 
-      - name: Configure Helper-Pod Image
+      - name: Deploy Cluster Storage Configuration
         shell: bash
         run: |
           set -euo pipefail
-          # Configure helper-pod image in ConfigMap for local-path-provisioner (both namespaces)
+          # Deploy centralized storage configuration using Helm Chart
+          # This replaces manual ConfigMap management with a standardized approach
           
-          # Function to update ConfigMap for a namespace
-          update_configmap() {
-            local NAMESPACE=$1
-            local STORAGE_PATH=$2
-            
-            if ! kubectl get configmap local-path-config -n "$NAMESPACE" >/dev/null 2>&1; then
-              echo "⚠️ ConfigMap local-path-config not found in $NAMESPACE, skipping"
-              return
-            fi
-            
-            echo "📋 Configuring helper-pod image in ConfigMap for namespace $NAMESPACE..."
-            
-            cat <<EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: local-path-config
-            namespace: $NAMESPACE
-          data:
-            config.json: |-
-              {
-                "nodePathMap":[
-                  {
-                    "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
-                    "paths":["$STORAGE_PATH"]
-                  }
-                ],
-                "setup": "#!/bin/sh\nset -eu\nmkdir -p \"\$VOL_DIR\"\nchmod 0777 \"\$VOL_DIR\"\n",
-                "teardown": "#!/bin/sh\nset -eu\nrm -rf \"\$VOL_DIR\"\n",
-                "helperPod": {
-                  "image": "${ACR_REGISTRY}/busybox:1.36",
-                  "imagePullPolicy": "IfNotPresent"
-                }
-              }
-          EOF
-            
-            echo "✅ ConfigMap updated in $NAMESPACE with ${ACR_REGISTRY}/busybox:1.36"
-          }
+          echo "📦 Deploying cluster storage configuration via Helm..."
           
-          # Update ConfigMap for kube-system (k3s)
+          # Determine which namespace has the provisioner and configure accordingly
+          PROVISIONER_NAMESPACE=""
+          STORAGE_PATH=""
+          
           if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            update_configmap "kube-system" "/var/lib/rancher/k3s/storage"
+            PROVISIONER_NAMESPACE="kube-system"
+            STORAGE_PATH="/var/lib/rancher/k3s/storage"
+            echo "✅ Found provisioner in kube-system (k3s default)"
+          elif kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            PROVISIONER_NAMESPACE="local-path-storage"
+            STORAGE_PATH="/opt/local-path-provisioner"
+            echo "✅ Found provisioner in local-path-storage (manual deployment)"
+          else
+            echo "⚠️ Local Path Provisioner not found, skipping storage configuration"
+            exit 0
           fi
           
-          # Update ConfigMap for local-path-storage (manual deployment)
-          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            update_configmap "local-path-storage" "/opt/local-path-provisioner"
-          fi
+          # Deploy cluster-storage Helm chart
+          helm upgrade --install cluster-storage ./infra/charts/cluster-storage \
+            --namespace "$PROVISIONER_NAMESPACE" \
+            --create-namespace \
+            --set localPathProvisioner.namespace="$PROVISIONER_NAMESPACE" \
+            --set localPathProvisioner.storagePath="$STORAGE_PATH" \
+            --set localPathProvisioner.configMap.helperPod.image="${ACR_REGISTRY}/busybox:1.36" \
+            --set rbac.clusterRole.enabled=true \
+            --wait --timeout=2m
+          
+          echo "✅ Cluster storage configuration deployed successfully"
 
       - name: Restart Provisioner and Validate
         shell: bash
         run: |
           set -euo pipefail
-          # Restart provisioner after ConfigMap update and validate (KRITISCH!)
+          # Restart provisioner after Helm Chart deployment and validate (KRITISCH!)
           # The provisioner only reads ConfigMap on startup, so restart is required
+          
+          # Determine which namespace has the provisioner
+          PROVISIONER_NAMESPACE=""
+          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            PROVISIONER_NAMESPACE="kube-system"
+          elif kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+            PROVISIONER_NAMESPACE="local-path-storage"
+          else
+            echo "⚠️ Local Path Provisioner not found, skipping restart"
+            exit 0
+          fi
           
           # Function to restart provisioner and validate
           restart_provisioner() {
@@ -658,12 +654,47 @@ jobs:
             # Wait briefly for provisioner to fully start
             sleep 5
             
+            # CRITICAL: Verify ConfigMap is correctly loaded by provisioner
+            echo "🔍 Verifying ConfigMap is correctly loaded by provisioner..."
+            PROVISIONER_POD=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$PROVISIONER_POD" ]; then
+              echo "📋 Checking ConfigMap content that provisioner sees..."
+              # Read ConfigMap from provisioner pod's mounted volume
+              CONFIGMAP_CONTENT=$(kubectl exec -n "$NAMESPACE" "$PROVISIONER_POD" -- cat /etc/config/config.json 2>/dev/null || echo "")
+              if [ -n "$CONFIGMAP_CONTENT" ]; then
+                echo "ConfigMap content:"
+                echo "$CONFIGMAP_CONTENT" | jq '.' 2>/dev/null || echo "$CONFIGMAP_CONTENT"
+                
+                # Check if helperPod image is set correctly
+                HELPER_IMAGE_IN_CONFIG=$(echo "$CONFIGMAP_CONTENT" | jq -r '.helperPod.image // empty' 2>/dev/null || echo "")
+                if [ -n "$HELPER_IMAGE_IN_CONFIG" ]; then
+                  echo "Helper Pod Image in ConfigMap: $HELPER_IMAGE_IN_CONFIG"
+                  if echo "$HELPER_IMAGE_IN_CONFIG" | grep -q "${ACR_REGISTRY}"; then
+                    echo "✅ ConfigMap contains ACR image - provisioner should use it!"
+                  else
+                    echo "⚠️ ConfigMap contains: $HELPER_IMAGE_IN_CONFIG (expected: ${ACR_REGISTRY}/busybox:1.36)"
+                    echo "   This indicates the ConfigMap update might not have been applied correctly"
+                  fi
+                else
+                  echo "⚠️ No helperPod.image found in ConfigMap - using default?"
+                fi
+              else
+                echo "⚠️ Could not read ConfigMap from provisioner pod"
+              fi
+            fi
+            
             # CRITICAL: Delete all existing helper pods so new ones are created with updated ConfigMap
             echo "🧹 Deleting all existing helper pods to force recreation with new ConfigMap..."
             HELPER_PODS=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep helper-pod || echo "")
             if [ -n "$HELPER_PODS" ]; then
               echo "Found helper pods to delete:"
               echo "$HELPER_PODS"
+              # Before deleting, check their images
+              for POD_NAME in $(echo "$HELPER_PODS" | sed 's|pod/||'); do
+                OLD_IMAGE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "")
+                OLD_STATUS=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                echo "  Pod $POD_NAME: Image=$OLD_IMAGE, Status=$OLD_STATUS"
+              done
               echo "$HELPER_PODS" | xargs -r kubectl delete -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null || true
               echo "✅ Old helper pods deleted"
               sleep 3  # Wait briefly for cleanup
@@ -683,6 +714,10 @@ jobs:
             
             # Validate: Check if Helper-Pods use ACR image
             echo "🧪 Validating helper pod image configuration..."
+            # Cleanup any existing test PVC first
+            kubectl delete pvc test-provisioner-validation -n default --ignore-not-found=true 2>/dev/null || true
+            sleep 2
+            
             # Create temporary test PVC to trigger helper pod creation
             kubectl apply -f - <<EOF 2>/dev/null || echo "⚠️ Test PVC creation skipped (might already exist)"
           apiVersion: v1
@@ -699,43 +734,65 @@ jobs:
             storageClassName: local-path
           EOF
             
-            # Wait for helper pod to be created
+            # Wait for helper pod to be created and monitor it
             echo "⏳ Waiting for helper pod to be created..."
-            sleep 8
+            HELPER_POD=""
+            for i in {1..20}; do
+              sleep 1
+              HELPER_POD=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep helper-pod | head -1 | sed 's|pod/||' || echo "")
+              if [ -n "$HELPER_POD" ]; then
+                echo "✅ Helper pod found: $HELPER_POD"
+                break
+              fi
+              if [ $i -eq 10 ]; then
+                echo "  Still waiting for helper pod... (attempt $i/20)"
+              fi
+            done
             
-            # Check Helper-Pod Image
-            HELPER_POD=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep helper-pod | head -1)
             if [ -n "$HELPER_POD" ]; then
-              HELPER_IMAGE=$(kubectl get $HELPER_POD -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "")
-              echo "Helper Pod Image: $HELPER_IMAGE"
+              # Get pod details immediately (it might disappear quickly)
+              HELPER_IMAGE=$(kubectl get pod "$HELPER_POD" -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || echo "")
+              HELPER_STATUS=$(kubectl get pod "$HELPER_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+              HELPER_REASON=$(kubectl get pod "$HELPER_POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo "")
+              
+              echo "Helper Pod: $HELPER_POD"
+              echo "  Image: $HELPER_IMAGE"
+              echo "  Status: $HELPER_STATUS"
+              if [ -n "$HELPER_REASON" ]; then
+                echo "  Reason: $HELPER_REASON"
+              fi
+              
               if echo "$HELPER_IMAGE" | grep -q "${ACR_REGISTRY}"; then
                 echo "✅ Helper Pod uses ACR image - ConfigMap update successful!"
               else
                 echo "⚠️ Helper Pod uses: $HELPER_IMAGE (expected: ${ACR_REGISTRY}/busybox:1.36)"
-                echo "   This might be normal if the pod was created before the ConfigMap update"
+                echo "   This indicates the ConfigMap might not be correctly loaded by the provisioner"
+                
+                # Check if it's an ImagePull error
+                if echo "$HELPER_REASON" | grep -qiE "ImagePull|ErrImagePull|ImagePullBackOff"; then
+                  echo "   ⚠️ ImagePull error detected - helper pod cannot pull image"
+                  echo "   📋 Pod events:"
+                  kubectl get events -n "$NAMESPACE" --field-selector involvedObject.name="$HELPER_POD" --sort-by='.lastTimestamp' | tail -5 || true
+                fi
               fi
+              
+              # Show pod description for debugging
+              echo "📋 Pod details:"
+              kubectl describe pod "$HELPER_POD" -n "$NAMESPACE" 2>/dev/null | tail -20 || true
             else
-              echo "ℹ️ No helper pod found yet (this is normal if PVC is still pending)"
+              echo "ℹ️ No helper pod found after 20 seconds"
+              echo "   Checking PVC status..."
+              kubectl get pvc test-provisioner-validation -n default 2>/dev/null || true
+              echo "   Checking provisioner logs for errors..."
+              kubectl logs -n "$NAMESPACE" -l app=local-path-provisioner --tail=20 --since=30s 2>/dev/null || true
             fi
             
             # Cleanup Test-PVC
             kubectl delete pvc test-provisioner-validation -n default --ignore-not-found=true 2>/dev/null || true
           }
           
-          # Restart for kube-system (k3s)
-          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            restart_provisioner "kube-system"
-          fi
-          
-          # Restart for local-path-storage (manual deployment)
-          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            restart_provisioner "local-path-storage"
-          fi
-          
-          if ! kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1 && \
-             ! kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            echo "ℹ️ Local Path Provisioner not found, skipping restart"
-          fi
+          # Restart provisioner in the detected namespace
+          restart_provisioner "$PROVISIONER_NAMESPACE"
 
       - name: Ensure StorageClass is default
         shell: bash

@@ -1,0 +1,23 @@
+# Template for project-specific storage RBAC
+# Copy this file to your project and customize:
+# 1. Replace ${PROJECT_NAMESPACE} with your namespace
+# 2. Replace ${PROJECT_SERVICE_ACCOUNT} with your ServiceAccount name
+# 3. Apply via kubectl or include in your Helm chart
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: local-path-config-reader
+  namespace: ${PROJECT_NAMESPACE}  # Replace with your namespace
+  labels:
+    app.kubernetes.io/component: storage-access
+    app.kubernetes.io/managed-by: helm  # or kubectl
+roleRef:
+  kind: ClusterRole
+  name: local-path-config-reader  # Created by cluster-storage chart
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: ${PROJECT_SERVICE_ACCOUNT}  # Replace with your ServiceAccount
+    namespace: ${PROJECT_NAMESPACE}
+
