@@ -29,6 +29,15 @@ All container images are automatically mirrored to Azure Container Registry (ACR
 │   │       └── observability.yaml
 │   ├── charts/
 │   │   └── cluster-storage/     # Helm chart for centralized storage config
+│   │       ├── Chart.yaml
+│   │       ├── values.yaml
+│   │       └── templates/
+│   │           ├── configmap.yaml      # Storage ConfigMap
+│   │           ├── clusterrole.yaml    # RBAC for projects
+│   │           ├── storageclass.yaml  # StorageClass definition
+│   │           └── _helpers.tpl
+│   ├── cluster/
+│   │   └── infra-repo-configurations.yaml  # DEPRECATED (migrated to Helm)
 │   ├── rbac/
 │   │   └── cicd-serviceaccount.yaml  # RBAC for CI/CD ServiceAccount
 │   └── templates/               # Templates for projects
@@ -125,9 +134,12 @@ python3 scripts/generate_addon_artifacts.py
 
 ### Cluster Storage Configuration
 - **Helm Chart**: `infra/charts/cluster-storage`
-- **ConfigMap**: `local-path-config` (in provisioner namespace)
-- **ClusterRole**: `local-path-config-reader` (for project access)
+- **Components**:
+  - ConfigMap: `local-path-config` (in provisioner namespace)
+  - ClusterRole: `local-path-config-reader` (for project access)
+  - StorageClass: `local-path` (default storage class)
 - **Purpose**: Centralized management of storage configuration
+- **Integration**: All storage-related configurations are now managed via Helm Chart
 
 ## Accessing Dashboards
 

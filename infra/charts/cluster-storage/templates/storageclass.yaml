@@ -1,0 +1,23 @@
+{{- if .Values.storageClass.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name }}
+  labels:
+    app.kubernetes.io/name: {{ include "cluster-storage.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: storageclass
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: storage-infrastructure
+  annotations:
+    {{- if .Values.storageClass.isDefault }}
+    storageclass.kubernetes.io/is-default-class: "true"
+    {{- end }}
+    description: "Default StorageClass for local-path-provisioner (k3s built-in)"
+    managed-by: "Infrastructure Repository"
+provisioner: {{ .Values.storageClass.provisioner }}
+volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+{{- end }}
+

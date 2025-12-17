@@ -1,0 +1,21 @@
+# =============================================================================
+# INFRASTRUCTURE REPOSITORY CONFIGURATIONS
+# =============================================================================
+# Diese Datei ist DEPRECATED - Die Konfigurationen werden jetzt über das
+# Helm Chart "cluster-storage" verwaltet.
+#
+# Diese Datei bleibt aus Kompatibilitätsgründen erhalten, wird aber nicht mehr
+# direkt deployed. Alle Konfigurationen sind jetzt Teil des Helm Charts:
+# infra/charts/cluster-storage/
+#
+# Migration:
+#   - ClusterRole: Wird von cluster-storage Chart erstellt
+#   - StorageClass: Wird von cluster-storage Chart erstellt
+#   - ConfigMap: Wird von cluster-storage Chart erstellt
+#
+# Siehe: docs/PROJECT_STANDARDS.md für aktuelle Dokumentation
+# =============================================================================
+
+# DEPRECATED: Diese Datei wird nicht mehr verwendet
+# Alle Konfigurationen sind jetzt Teil des Helm Charts: infra/charts/cluster-storage/
+

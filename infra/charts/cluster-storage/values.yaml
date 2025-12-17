@@ -41,3 +41,13 @@ rbac:
     #   - database-infrastructure
     #   - app-namespace
 
+# StorageClass configuration
+storageClass:
+  enabled: true
+  name: local-path
+  provisioner: rancher.io/local-path
+  isDefault: true
+  volumeBindingMode: WaitForFirstConsumer
+  reclaimPolicy: Delete
+  allowVolumeExpansion: false
+
