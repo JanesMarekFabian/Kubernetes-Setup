@@ -74,7 +74,79 @@ metadata:
   namespace: <project-name>
 ```
 
-### 3. Storage-Zugriff (Local Path Provisioner)
+### 3. CI/CD RBAC (Zentrale ClusterRole)
+
+**Wichtig**: Der Cluster stellt eine zentrale `cicd-deploy-role` bereit, die alle notwendigen Rechte für CI/CD-Deployments enthält. Projekte müssen **keine eigenen ClusterRoles** erstellen, sondern binden ihren ServiceAccount an diese zentrale Role.
+
+#### Schritt 1: ClusterRoleBinding erstellen
+
+Erstelle ein `ClusterRoleBinding` in deinem Projekt, das deinen ServiceAccount an die zentrale `cicd-deploy-role` bindet:
+
+```yaml
+# k8s/rbac/cicd-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: <project>-cicd-deploy-binding
+  labels:
+    app.kubernetes.io/name: <project>
+    app.kubernetes.io/component: cicd-rbac
+    app.kubernetes.io/managed-by: helm
+roleRef:
+  kind: ClusterRole
+  name: cicd-deploy-role  # Zentrale ClusterRole (wird vom Infrastructure Repo bereitgestellt)
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: <project>-deploy
+    namespace: <project-namespace>
+```
+
+#### Was die `cicd-deploy-role` enthält
+
+Die zentrale `cicd-deploy-role` gewährt folgende Rechte:
+
+- ✅ **RBAC Management**: Erstellen/Verwalten von Roles und RoleBindings
+- ✅ **Storage Classes**: Lesen/Verwalten von StorageClasses
+- ✅ **Namespaces**: Erstellen/Lesen von Namespaces
+- ✅ **Core Resources**: ConfigMaps, Secrets, Services, Pods, Endpoints
+- ✅ **Persistent Volume Claims**: Vollständige PVC-Verwaltung (CRITICAL für PVC-basierte Deployments)
+- ✅ **Apps Resources**: Deployments, StatefulSets, DaemonSets
+- ✅ **Ingress Resources**: Ingresses und IngressClasses
+- ✅ **Service Accounts**: Erstellen/Verwalten von ServiceAccounts
+- ✅ **Nodes**: Lesen von Node-Informationen (für Debugging)
+- ✅ **Metrics**: Lesen von Metriken (für Monitoring)
+
+**Vorteile der zentralen Role:**
+- ✅ Konsistente Rechte für alle Projekte
+- ✅ Zentrale Verwaltung und Updates
+- ✅ Keine Duplikation von RBAC-Konfigurationen
+- ✅ Einfacheres Troubleshooting
+
+#### Helm Template-Beispiel
+
+Für Helm Charts kannst du die RBAC-Binding als Template erstellen:
+
+```yaml
+# charts/<your-app>/templates/cicd-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "<your-app>.fullname" . }}-cicd-deploy
+  labels:
+    {{- include "<your-app>.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cicd-rbac
+roleRef:
+  kind: ClusterRole
+  name: cicd-deploy-role
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "<your-app>.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+```
+
+### 4. Storage-Zugriff (Local Path Provisioner)
 
 #### Schritt 1: RBAC für Storage-Zugriff
 
@@ -116,7 +188,7 @@ spec:
       storage: 10Gi
 ```
 
-### 4. Helm Chart-Struktur
+### 5. Helm Chart-Struktur
 
 Projekte sollten Helm Charts verwenden:
 
@@ -131,12 +203,13 @@ your-project/
 │           ├── service.yaml
 │           ├── pvc.yaml
 │           └── rbac/
-│               └── storage-access.yaml
+│               ├── cicd-binding.yaml      # CI/CD RBAC (ClusterRoleBinding)
+│               └── storage-access.yaml    # Storage RBAC (RoleBinding)
 └── values/
     └── production.yaml
 ```
 
-### 5. Image-Registry
+### 6. Image-Registry
 
 **Wichtig**: Alle Images müssen über Azure Container Registry (ACR) bereitgestellt werden.
 
@@ -148,7 +221,7 @@ image:
   tag: "latest"
 ```
 
-### 6. Labels und Annotations
+### 7. Labels und Annotations
 
 Verwende standardisierte Labels:
 
@@ -165,7 +238,8 @@ metadata:
 ## Checkliste für neue Projekte
 
 - [ ] Namespace erstellt
-- [ ] ServiceAccount erstellt
+- [ ] ServiceAccount erstellt (`<project>-deploy`)
+- [ ] **CI/CD RBAC konfiguriert** (`ClusterRoleBinding` an `cicd-deploy-role`)
 - [ ] RBAC für Storage-Zugriff konfiguriert (`local-path-config-reader`)
 - [ ] Helm Chart erstellt (falls nicht vorhanden)
 - [ ] Images über ACR bereitgestellt
@@ -191,7 +265,29 @@ metadata:
   namespace: my-project
 ```
 
-### 2. Storage-RBAC
+### 2. CI/CD RBAC
+
+```yaml
+# k8s/rbac/cicd-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: my-project-cicd-deploy-binding
+  labels:
+    app.kubernetes.io/name: my-project
+    app.kubernetes.io/component: cicd-rbac
+    app.kubernetes.io/managed-by: helm
+roleRef:
+  kind: ClusterRole
+  name: cicd-deploy-role  # Zentrale ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: my-project-deploy
+    namespace: my-project
+```
+
+### 3. Storage-RBAC
 
 ```yaml
 # k8s/rbac/storage-access.yaml
@@ -210,7 +306,7 @@ subjects:
     namespace: my-project
 ```
 
-### 3. PVC-Beispiel
+### 4. PVC-Beispiel
 
 ```yaml
 # k8s/pvc.yaml
@@ -228,7 +324,7 @@ spec:
       storage: 20Gi
 ```
 
-### 4. Deployment mit PVC
+### 5. Deployment mit PVC
 
 ```yaml
 # k8s/deployment.yaml
