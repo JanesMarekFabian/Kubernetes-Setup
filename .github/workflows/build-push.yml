@@ -542,6 +542,20 @@ jobs:
             fi
           fi
           
+          # Check if StorageClass exists and is not managed by Helm
+          if kubectl get storageclass local-path >/dev/null 2>&1; then
+            MANAGED_BY=$(kubectl get storageclass local-path -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || echo "")
+            if [ "$MANAGED_BY" != "Helm" ]; then
+              echo "⚠️ StorageClass exists but is not managed by Helm, adopting it..."
+              echo "   Deleting existing StorageClass to allow Helm to recreate it..."
+              kubectl delete storageclass local-path --ignore-not-found=true
+              echo "✅ Existing StorageClass deleted"
+              sleep 2  # Brief wait for deletion to complete
+            else
+              echo "✅ StorageClass is already managed by Helm"
+            fi
+          fi
+          
           # Deploy cluster-storage Helm chart
           helm upgrade --install cluster-storage ./infra/charts/cluster-storage \
             --namespace "$PROVISIONER_NAMESPACE" \
