@@ -19,11 +19,15 @@ data:
         }
       ],
       "setup": {{ .Values.localPathProvisioner.configMap.setup | toJson }},
-      "teardown": {{ .Values.localPathProvisioner.configMap.teardown | toJson }},
-      "helperPod": {
-        "image": "{{ .Values.localPathProvisioner.configMap.helperPod.image }}",
-        "imagePullPolicy": "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
-      }
+      "teardown": {{ .Values.localPathProvisioner.configMap.teardown | toJson }}
     }
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    spec:
+      containers:
+      - name: helper-pod
+        image: "{{ .Values.localPathProvisioner.configMap.helperPod.image }}"
+        imagePullPolicy: "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
 {{- end }}
 
