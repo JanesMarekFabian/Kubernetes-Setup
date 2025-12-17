@@ -24,6 +24,8 @@ data:
   helperPod.yaml: |-
     apiVersion: v1
     kind: Pod
+    metadata:
+      generateName: helper-pod-create-pvc-
     spec:
       containers:
       - name: helper-pod
