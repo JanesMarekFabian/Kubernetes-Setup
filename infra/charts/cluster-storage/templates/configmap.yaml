@@ -25,5 +25,13 @@ data:
         "imagePullPolicy": "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
       }
     }
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    spec:
+      containers:
+      - name: helper-pod
+        image: "{{ .Values.localPathProvisioner.configMap.helperPod.image }}"
+        imagePullPolicy: "{{ .Values.localPathProvisioner.configMap.helperPod.imagePullPolicy }}"
 {{- end }}
 
