@@ -434,11 +434,11 @@ jobs:
             echo "ℹ️ Local Path Provisioner not found, skipping ImagePullSecret configuration"
           fi
 
-      - name: Patch Provisioner Deployment Image
+      - name: Patch Provisioner Deployment Image to ACR
         shell: bash
         run: |
           set -euo pipefail
-          # Patch deployment to use ACR image instead of Docker Hub (for both namespaces)
+          # Force update provisioner to use ACR image v0.0.31 (the version we mirror)
           
           patch_deployment_image() {
             local NAMESPACE=$1
@@ -461,29 +461,51 @@ jobs:
             
             echo "Current image: $CURRENT_IMAGE"
             
-            # Check if already using ACR image
-            if echo "$CURRENT_IMAGE" | grep -q "${ACR_REGISTRY}"; then
-              echo "✅ Deployment already uses ACR image"
-              return
+            # Always use v0.0.31 from ACR (the version we mirror)
+            ACR_IMAGE="${ACR_REGISTRY}/rancher/local-path-provisioner:v0.0.31"
+            
+            # Check if already using the correct ACR image
+            if [ "$CURRENT_IMAGE" = "$ACR_IMAGE" ]; then
+              echo "✅ Deployment already uses correct ACR image: $ACR_IMAGE"
+            else
+              echo "🔄 Updating to ACR image: $ACR_IMAGE"
+              
+              # Patch deployment
+              kubectl set image deployment/local-path-provisioner \
+                local-path-provisioner="$ACR_IMAGE" \
+                -n "$NAMESPACE"
+              
+              echo "✅ Deployment patched to use ACR image"
             fi
             
-            # Extract version from current image (e.g., v0.0.31 or v0.0.26)
-            VERSION=$(echo "$CURRENT_IMAGE" | sed -n 's/.*:\(v[0-9.]*\)/\1/p' || echo "v0.0.31")
-            ACR_IMAGE="${ACR_REGISTRY}/rancher/local-path-provisioner:${VERSION}"
+            # Ensure ServiceAccount has ACR pull secret
+            echo "🔐 Ensuring ServiceAccount has ACR pull secret..."
+            SA_NAME="local-path-provisioner-service-account"
+            if ! kubectl get serviceaccount "$SA_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "⚠️ ServiceAccount $SA_NAME not found, trying default..."
+              SA_NAME="default"
+            fi
             
-            echo "Patching to use: $ACR_IMAGE"
-            
-            # Patch deployment
-            kubectl set image deployment/local-path-provisioner \
-              local-path-provisioner="$ACR_IMAGE" \
-              -n "$NAMESPACE"
-            
-            echo "✅ Deployment patched to use ACR image"
+            # Check if secret already exists
+            if kubectl get serviceaccount "$SA_NAME" -n "$NAMESPACE" -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null | grep -q "acr-pull"; then
+              echo "✅ ServiceAccount already has acr-pull secret"
+            else
+              # Try to add the secret
+              kubectl patch serviceaccount "$SA_NAME" -n "$NAMESPACE" \
+                -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || \
+              kubectl patch serviceaccount "$SA_NAME" -n "$NAMESPACE" \
+                --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || {
+                echo "⚠️ Could not patch ServiceAccount, but continuing..."
+              }
+              echo "✅ ServiceAccount patched with ACR pull secret"
+            fi
             
             # Wait for rollout
             echo "⏳ Waiting for deployment rollout..."
-            kubectl rollout status deployment/local-path-provisioner -n "$NAMESPACE" --timeout=3m || {
-              echo "⚠️ Rollout timeout, but image is patched"
+            kubectl rollout status deployment/local-path-provisioner -n "$NAMESPACE" --timeout=5m || {
+              echo "⚠️ Rollout timeout, checking status..."
+              kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner || true
+              kubectl describe pod -n "$NAMESPACE" -l app=local-path-provisioner | tail -20 || true
             }
           }
           
