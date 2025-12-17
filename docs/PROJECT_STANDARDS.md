@@ -186,7 +186,37 @@ Braucht deine App Kubernetes API-Zugriffe?
 
 **Für Cluster-Rechte**: Wenn deine App cluster-weite Rechte braucht, konsultiere das **Infrastructure Repo**. Es stellt zentrale ClusterRoles bereit (z.B. `local-path-config-reader`), die Projekte verwenden können.
 
-#### Schritt 1: ClusterRoleBinding erstellen
+#### Zentrale ClusterRoleBinding für Infrastructure Repo
+
+Das **Infrastructure Repo** erstellt eine zentrale `ClusterRoleBinding` namens `cicd-deploy-binding`, die den `cicd-deploy` ServiceAccount (im `kube-system` Namespace) an die `cicd-deploy-role` bindet:
+
+```yaml
+# infra/rbac/cicd-serviceaccount.yaml (Infrastructure Repo)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cicd-deploy-binding  # ← Zentraler Name (reserviert!)
+  labels:
+    app.kubernetes.io/name: cicd
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/managed-by: infrastructure-repo
+    app.kubernetes.io/part-of: cicd-infrastructure
+  annotations:
+    description: "Central ClusterRoleBinding for CI/CD deployments - binds cicd-deploy ServiceAccount to cicd-deploy-role"
+    managed-by: "Infrastructure Repository"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cicd-deploy-role
+subjects:
+  - kind: ServiceAccount
+    name: cicd-deploy
+    namespace: kube-system
+```
+
+**⚠️ Wichtig**: Der Name `cicd-deploy-binding` ist **reserviert** für das Infrastructure Repo. Projekte dürfen **keine** ClusterRoleBinding mit diesem Namen erstellen, da dies zu Namenskonflikten führt!
+
+#### Schritt 1: Projekt-spezifische ClusterRoleBinding erstellen
 
 Erstelle ein `ClusterRoleBinding` in deinem Projekt, das deinen ServiceAccount an die zentrale `cicd-deploy-role` bindet:
 
@@ -210,7 +240,10 @@ subjects:
     namespace: <project-namespace>
 ```
 
-**⚠️ Wichtig**: Binde hier **NUR** den CI/CD ServiceAccount (`<project>-deploy`), **NICHT** den Runtime ServiceAccount!
+**⚠️ Wichtig**: 
+- Binde hier **NUR** den CI/CD ServiceAccount (`<project>-deploy`), **NICHT** den Runtime ServiceAccount!
+- Verwende einen **eindeutigen Namen** für deine ClusterRoleBinding: `<project>-cicd-deploy-binding` (z.B. `database-infrastructure-cicd-deploy-binding`)
+- **NICHT** `cicd-deploy-binding` verwenden - dieser Name ist für das Infrastructure Repo reserviert!
 
 #### Was die `cicd-deploy-role` enthält
 
@@ -232,6 +265,28 @@ Die zentrale `cicd-deploy-role` gewährt folgende Rechte:
 - ✅ Zentrale Verwaltung und Updates
 - ✅ Keine Duplikation von RBAC-Konfigurationen
 - ✅ Einfacheres Troubleshooting
+
+#### Validierung der zentralen ClusterRoleBinding
+
+Um zu prüfen, ob die zentrale `cicd-deploy-binding` existiert und funktioniert:
+
+```bash
+# Prüfe, ob die ClusterRoleBinding existiert
+kubectl get clusterrolebinding cicd-deploy-binding
+
+# Prüfe die Details der Binding
+kubectl get clusterrolebinding cicd-deploy-binding -o yaml
+
+# Prüfe, ob der cicd-deploy ServiceAccount die Rechte hat
+kubectl auth can-i create namespaces --as=system:serviceaccount:kube-system:cicd-deploy
+kubectl auth can-i get rolebindings --as=system:serviceaccount:kube-system:cicd-deploy
+kubectl auth can-i patch namespaces --as=system:serviceaccount:kube-system:cicd-deploy
+```
+
+**Falls die ClusterRoleBinding fehlt:**
+- Die zentrale `cicd-deploy-binding` wird automatisch vom Infrastructure Repo erstellt
+- Sie wird über die `setup-cicd` GitHub Action deployed
+- Falls sie fehlt, führe den Infrastructure Repo Workflow aus oder kontaktiere das Infrastructure Team
 
 **Sicherheitshinweise:**
 - ⚠️ Diese Role hat **cluster-weite Rechte** (ClusterRoleBinding)
