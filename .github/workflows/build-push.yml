@@ -612,9 +612,24 @@ jobs:
             --namespace "$PROVISIONER_NAMESPACE" \
             --create-namespace \
             --set controller.namespace="$PROVISIONER_NAMESPACE" \
-            --set controller.image.repository="python" \
+            --set controller.image.repository="${ACR_REGISTRY}/python" \
             --set controller.image.tag="3.11-slim" \
             --set rbac.enabled=true
+          
+          # Ensure ServiceAccount has ACR pull secret
+          echo "🔐 Ensuring ServiceAccount has ACR pull secret..."
+          kubectl patch serviceaccount helper-pod-fix-controller -n "$PROVISIONER_NAMESPACE" \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || \
+          kubectl patch serviceaccount helper-pod-fix-controller -n "$PROVISIONER_NAMESPACE" \
+            --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || true
+          
+          # Verify ServiceAccount is patched
+          SA_IPS=$(kubectl get serviceaccount helper-pod-fix-controller -n "$PROVISIONER_NAMESPACE" -o jsonpath='{.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+          if [[ "$SA_IPS" == *"acr-pull"* ]]; then
+            echo "✅ ServiceAccount patched with ACR pull secret"
+          else
+            echo "⚠️ Warning: ServiceAccount may not have ACR pull secret"
+          fi
           
           echo "✅ Helm release installed, waiting for pod to be ready..."
           
