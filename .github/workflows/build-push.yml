@@ -592,6 +592,39 @@ jobs:
           
           echo "✅ Cluster storage configuration deployed successfully"
 
+      - name: Deploy Helper Pod Fix Controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔧 Deploying Helper Pod Fix Controller..."
+          
+          # Determine provisioner namespace
+          PROVISIONER_NAMESPACE="kube-system"
+          if ! kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
+            if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
+              PROVISIONER_NAMESPACE="local-path-storage"
+            fi
+          fi
+          
+          # Deploy controller
+          helm upgrade --install helper-pod-fix-controller ./infra/charts/helper-pod-fix-controller \
+            --namespace "$PROVISIONER_NAMESPACE" \
+            --create-namespace \
+            --set controller.namespace="$PROVISIONER_NAMESPACE" \
+            --set controller.image.repository="python" \
+            --set controller.image.tag="3.11-slim" \
+            --set rbac.enabled=true \
+            --wait --timeout=2m
+          
+          echo "✅ Helper Pod Fix Controller deployed successfully"
+          
+          # Wait for controller to be ready
+          echo "⏳ Waiting for controller to be ready..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=helper-pod-fix-controller -n "$PROVISIONER_NAMESPACE" --timeout=2m || {
+            echo "⚠️ Controller pod not ready, but continuing..."
+            kubectl get pods -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller || true
+          }
+
       - name: Restart Provisioner and Validate
         shell: bash
         run: |
