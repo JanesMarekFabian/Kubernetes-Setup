@@ -36,10 +36,10 @@ spec:
         resources:
           requests:
             memory: "64Mi"
-            cpu: "50m"
+            cpu: "200m"
           limits:
             memory: "128Mi"
-            cpu: "100m"
+            cpu: "500m"
       containers:
       - name: controller
         image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
