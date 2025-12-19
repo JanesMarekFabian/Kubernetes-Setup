@@ -82,14 +82,15 @@ data:
           continue
         fi
         
-        # Get events for this PVC - check both reason and message
-        # Use jsonpath to get reason and message together
+        # Get events for this PVC - simpler approach: check for ProvisioningFailed events
+        # and look for invalid pod name patterns in the message
         events_output=$(kubectl get events -n "$namespace" \
-          --field-selector "involvedObject.name=$name,involvedObject.kind=PersistentVolumeClaim" \
-          -o jsonpath='{range .items[*]}{.reason}{"|"}{.message}{"\n"}{end}' 2>/dev/null || echo "")
+          --field-selector "involvedObject.name=$name,involvedObject.kind=PersistentVolumeClaim,reason=ProvisioningFailed" \
+          -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' 2>/dev/null || echo "")
         
-        # Check if we have ProvisioningFailed with invalid pod name error
-        if echo "$events_output" | grep -qiE "ProvisioningFailed.*Invalid value.*metadata\.name.*-create-pvc-|ProvisioningFailed.*Invalid value.*metadata\.name.*-delete-pvc-"; then
+        # Check if message contains invalid pod name patterns
+        # The error message contains: Pod "-create-pvc-..." or Pod "-delete-pvc-..."
+        if echo "$events_output" | grep -qiE 'Pod "[-]create-pvc-|Pod "[-]delete-pvc-'; then
           log_warn "Found failed PVC $namespace/$name due to invalid pod name"
           echo "1"
         else
@@ -130,22 +131,21 @@ data:
         failed_count=$(get_failed_pvcs)
         failed_count=${failed_count:-0}  # Default to 0 if empty
         
+        # Debug: Always log failed count
         if [ "$failed_count" -gt 0 ]; then
           log_warn "Found $failed_count PVCs failing due to invalid pod names"
-          
-          # Restart provisioner if needed (with cooldown)
-          current_time=$(date +%s)
-          if [ $((current_time - last_restart_time)) -gt "$restart_cooldown" ]; then
-            restart_provisioner
-            last_restart_time=$current_time
-          else
-            remaining=$((restart_cooldown - (current_time - last_restart_time)))
-            log "Provisioner restart on cooldown, $remaining seconds remaining"
-          fi
         else
-          if [ "$DEBUG" = "true" ]; then
-            log "No failed PVCs found"
-          fi
+          log "No failed PVCs detected (checked $(kubectl get pvc --all-namespaces -o wide 2>/dev/null | awk 'NR>1 && $4=="Pending"' | wc -l) pending PVCs)"
+        fi
+        
+        # Restart provisioner if needed (with cooldown)
+        current_time=$(date +%s)
+        if [ $((current_time - last_restart_time)) -gt "$restart_cooldown" ]; then
+          restart_provisioner
+          last_restart_time=$current_time
+        else
+          remaining=$((restart_cooldown - (current_time - last_restart_time)))
+          log "Provisioner restart on cooldown, $remaining seconds remaining"
         fi
         
         sleep "$WATCH_INTERVAL"
