@@ -16,47 +16,13 @@ spec:
         {{- include "helper-pod-fix-controller.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "helper-pod-fix-controller.serviceAccountName" . }}
-      initContainers:
-      - name: install-deps
-        image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
-        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
-        command:
-        - /bin/sh
-        - -c
-        - |
-          echo "📦 Installing kubernetes Python library..."
-          pip install --no-cache-dir kubernetes && \
-          echo "✅ Installation complete, copying libraries..."
-          cp -r /usr/local/lib/python3.11/site-packages/* /shared/ 2>/dev/null || \
-          cp -r /usr/local/lib/python3.*/site-packages/* /shared/ 2>/dev/null || \
-          echo "⚠️ Could not copy libraries, will install in main container"
-        volumeMounts:
-        - name: shared-libs
-          mountPath: /shared
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "200m"
-          limits:
-            memory: "128Mi"
-            cpu: "500m"
       containers:
       - name: controller
         image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
         imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
         command:
         - /bin/sh
-        - -c
-        - |
-          # Check if libraries are available from init container
-          if [ -f /shared/kubernetes/__init__.py ]; then
-            echo "✅ Using libraries from init container"
-            export PYTHONPATH="/shared:$PYTHONPATH"
-          else
-            echo "📦 Installing kubernetes library in main container..."
-            pip install --no-cache-dir kubernetes
-          fi
-          python3 /app/controller.py
+        - /app/controller.sh
         env:
         - name: WATCH_INTERVAL
           value: {{ .Values.controller.watchInterval | quote }}
@@ -68,25 +34,21 @@ spec:
         - name: controller-script
           mountPath: /app
           readOnly: true
-        - name: shared-libs
-          mountPath: /shared
         - name: service-account-token
           mountPath: /var/run/secrets/kubernetes.io/serviceaccount
           readOnly: true
         resources:
           requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
             memory: "128Mi"
             cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
       volumes:
       - name: controller-script
         configMap:
           name: {{ include "helper-pod-fix-controller.fullname" . }}-script
           defaultMode: 0755
-      - name: shared-libs
-        emptyDir: {}
       - name: service-account-token
         projected:
           sources:

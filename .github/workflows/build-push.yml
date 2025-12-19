@@ -613,8 +613,8 @@ jobs:
             --namespace "$PROVISIONER_NAMESPACE" \
             --create-namespace \
             --set controller.namespace="$PROVISIONER_NAMESPACE" \
-            --set controller.image.repository="${ACR_REGISTRY}/library/python" \
-            --set controller.image.tag="3.11-slim" \
+            --set controller.image.repository="${ACR_REGISTRY}/bitnami/kubectl" \
+            --set controller.image.tag="latest" \
             --set rbac.enabled=true
           
           # Ensure ServiceAccount has ACR pull secret

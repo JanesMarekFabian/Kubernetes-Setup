@@ -6,205 +6,141 @@ metadata:
   labels:
     {{- include "helper-pod-fix-controller.labels" . | nindent 4 }}
 data:
-  controller.py: |
-    #!/usr/bin/env python3
-    """
-    Helper Pod Name Fix Controller
+  controller.sh: |
+    #!/bin/sh
+    set -eu
     
-    Watches for PVCs that fail due to invalid helper pod names and triggers
-    the provisioner to retry by deleting failed helper pods and restarting
-    the provisioner if necessary.
-    """
-    import os
-    import time
-    import logging
-    from datetime import datetime, timedelta
-    from kubernetes import client, config
-    from kubernetes.client.rest import ApiException
+    # Helper Pod Name Fix Controller
+    # Watches for PVCs that fail due to invalid helper pod names and triggers
+    # the provisioner to retry by deleting failed helper pods and restarting
+    # the provisioner if necessary.
     
-    # Setup logging
-    log_level = logging.DEBUG if os.getenv("DEBUG", "false").lower() == "true" else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    logger = logging.getLogger(__name__)
+    WATCH_INTERVAL=${WATCH_INTERVAL:-5}
+    NAMESPACE=${NAMESPACE:-kube-system}
+    DEBUG=${DEBUG:-false}
     
-    WATCH_INTERVAL = int(os.getenv("WATCH_INTERVAL", "5"))
-    NAMESPACE = os.getenv("NAMESPACE", "kube-system")
+    log() {
+      if [ "$DEBUG" = "true" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DEBUG] $*"
+      else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*"
+      fi
+    }
     
-    # Load Kubernetes config (in-cluster)
-    try:
-        config.load_incluster_config()
-        logger.info("Loaded in-cluster Kubernetes config")
-    except Exception as e:
-        logger.error(f"Failed to load Kubernetes config: {e}")
-        raise
+    log_error() {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
+    }
     
-    # Initialize API clients
-    v1 = client.CoreV1Api()
-    apps_v1 = client.AppsV1Api()
+    log_warn() {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*"
+    }
     
-    def get_failed_pvcs():
-        """Get PVCs that are failing due to invalid pod names"""
-        failed_pvcs = []
+    # Check if kubectl is available
+    if ! command -v kubectl >/dev/null 2>&1; then
+      log_error "kubectl not found in PATH"
+      exit 1
+    fi
+    
+    fix_invalid_helper_pods() {
+      log "Checking for helper pods with invalid names..."
+      deleted_count=0
+      
+      # Get all pods in namespace and check for invalid names (without jq)
+      kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | \
+        sed 's|pod/||' | \
+        grep -E '^-create-pvc-|^-delete-pvc-' | \
+        while read -r pod_name; do
+          if [ -n "$pod_name" ]; then
+            log "Deleting pod with invalid name: $pod_name"
+            kubectl delete pod "$pod_name" -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null && {
+              deleted_count=$((deleted_count + 1))
+              log "Deleted invalid pod: $pod_name"
+            } || log_warn "Failed to delete pod $pod_name"
+          fi
+        done
+      
+      if [ "$deleted_count" -gt 0 ]; then
+        log "Deleted $deleted_count invalid helper pods"
+      fi
+    }
+    
+    get_failed_pvcs() {
+      failed_count=0
+      
+      # Get all PVCs in Pending state (without jq)
+      kubectl get pvc --all-namespaces -o wide 2>/dev/null | \
+        awk 'NR>1 && $4=="Pending" {print $1"|"$2}' | \
+        while IFS='|' read -r namespace name; do
+          if [ -z "$namespace" ] || [ -z "$name" ]; then
+            continue
+          fi
+          
+          # Check events for invalid pod name errors (without jq)
+          events=$(kubectl get events -n "$namespace" \
+            --field-selector "involvedObject.name=$name,involvedObject.kind=PersistentVolumeClaim" \
+            -o jsonpath='{.items[*].message}' 2>/dev/null | \
+            grep -iE "Invalid value.*metadata\.name.*-create-pvc-|-delete-pvc-" || echo "")
+          
+          if [ -n "$events" ]; then
+            failed_count=$((failed_count + 1))
+            log_warn "Found failed PVC $namespace/$name due to invalid pod name"
+          fi
+        done
+      
+      echo "$failed_count"
+    }
+    
+    restart_provisioner_if_needed() {
+      # Check provisioner logs for invalid pod name errors
+      provisioner_pod=$(kubectl get pods -n "$NAMESPACE" -l app=local-path-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+      
+      if [ -z "$provisioner_pod" ]; then
+        log "No provisioner pod found"
+        return
+      fi
+      
+      logs=$(kubectl logs -n "$NAMESPACE" "$provisioner_pod" --tail=50 2>/dev/null || echo "")
+      
+      if echo "$logs" | grep -qiE "Invalid value.*metadata\.name.*-create-pvc-|-delete-pvc-"; then
+        log_warn "Provisioner logs show invalid pod name errors, restarting provisioner..."
+        kubectl delete pod "$provisioner_pod" -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null && {
+          log "Restarted provisioner pod: $provisioner_pod"
+        } || log_warn "Failed to restart provisioner pod"
+      fi
+    }
+    
+    main() {
+      log "Helper Pod Name Fix Controller started"
+      log "Watching namespace: $NAMESPACE, interval: ${WATCH_INTERVAL}s"
+      
+      last_restart_time=0
+      restart_cooldown=300  # 5 minutes in seconds
+      
+      while true; do
+        # Fix invalid helper pods
+        fix_invalid_helper_pods
         
-        try:
-            # Get all namespaces
-            namespaces = v1.list_namespace()
-            
-            for ns in namespaces.items:
-                namespace = ns.metadata.name
-                
-                try:
-                    # Get PVCs in this namespace
-                    pvcs = v1.list_namespaced_persistent_volume_claim(namespace)
-                    
-                    for pvc in pvcs.items:
-                        name = pvc.metadata.name
-                        status = pvc.status.phase if pvc.status else "Unknown"
-                        
-                        if status != "Pending":
-                            continue
-                        
-                        # Check events for invalid pod name errors
-                        try:
-                            events = v1.list_namespaced_event(
-                                namespace,
-                                field_selector=f"involvedObject.name={name},involvedObject.kind=PersistentVolumeClaim"
-                            )
-                            
-                            for event in events.items:
-                                message = event.message or ""
-                                if "Invalid value" in message and "metadata.name" in message and ("-create-pvc-" in message or "-delete-pvc-" in message):
-                                    failed_pvcs.append({
-                                        "name": name,
-                                        "namespace": namespace,
-                                        "message": message
-                                    })
-                                    logger.warning(f"Found failed PVC {namespace}/{name} due to invalid pod name")
-                                    break
-                        except ApiException as e:
-                            logger.debug(f"Error getting events for {namespace}/{name}: {e}")
-                            continue
-                            
-                except ApiException as e:
-                    logger.debug(f"Error listing PVCs in {namespace}: {e}")
-                    continue
-            
-            return failed_pvcs
-        except Exception as e:
-            logger.error(f"Error getting failed PVCs: {e}")
-            return []
-    
-    def fix_invalid_helper_pods():
-        """Delete any helper pods with invalid names"""
-        deleted_count = 0
+        # Check for failed PVCs
+        failed_count=$(get_failed_pvcs)
         
-        try:
-            # Get all pods in the namespace
-            pods = v1.list_namespaced_pod(NAMESPACE)
-            
-            for pod in pods.items:
-                pod_name = pod.metadata.name
-                
-                # Check if pod name starts with invalid prefix
-                if pod_name.startswith("-create-pvc-") or pod_name.startswith("-delete-pvc-"):
-                    logger.info(f"Deleting pod with invalid name: {pod_name}")
-                    try:
-                        v1.delete_namespaced_pod(
-                            pod_name,
-                            NAMESPACE,
-                            grace_period_seconds=0,
-                            body=client.V1DeleteOptions(propagation_policy="Foreground")
-                        )
-                        deleted_count += 1
-                        logger.info(f"Deleted invalid pod: {pod_name}")
-                    except ApiException as e:
-                        logger.warning(f"Failed to delete pod {pod_name}: {e}")
-            
-            if deleted_count > 0:
-                logger.info(f"Deleted {deleted_count} invalid helper pods")
-        except ApiException as e:
-            logger.error(f"Error listing pods: {e}")
-        except Exception as e:
-            logger.error(f"Error fixing helper pods: {e}")
-    
-    def restart_provisioner_if_needed():
-        """Restart provisioner if it's creating invalid pod names"""
-        try:
-            # Get provisioner pods
-            pods = v1.list_namespaced_pod(
-                NAMESPACE,
-                label_selector="app=local-path-provisioner"
-            )
-            
-            if not pods.items:
-                logger.debug("No provisioner pods found")
-                return
-            
-            # Check logs of first provisioner pod
-            pod_name = pods.items[0].metadata.name
-            try:
-                logs = v1.read_namespaced_pod_log(
-                    pod_name,
-                    NAMESPACE,
-                    tail_lines=50
-                )
-                
-                if logs and ("Invalid value" in logs or "metadata.name" in logs):
-                    logger.warning("Provisioner logs show invalid pod name errors, restarting provisioner...")
-                    
-                    # Delete provisioner pod to trigger restart
-                    v1.delete_namespaced_pod(
-                        pod_name,
-                        NAMESPACE,
-                        grace_period_seconds=0,
-                        body=client.V1DeleteOptions(propagation_policy="Foreground")
-                    )
-                    logger.info(f"Restarted provisioner pod: {pod_name}")
-            except ApiException as e:
-                logger.debug(f"Error reading provisioner logs: {e}")
-                
-        except ApiException as e:
-            logger.error(f"Error restarting provisioner: {e}")
-        except Exception as e:
-            logger.error(f"Error in restart_provisioner_if_needed: {e}")
-    
-    def main():
-        logger.info("Helper Pod Name Fix Controller started")
-        logger.info(f"Watching namespace: {NAMESPACE}, interval: {WATCH_INTERVAL}s")
+        if [ "$failed_count" -gt 0 ]; then
+          log_warn "Found $failed_count PVCs failing due to invalid pod names"
+          
+          # Restart provisioner if needed (with cooldown)
+          current_time=$(date +%s)
+          if [ $((current_time - last_restart_time)) -gt "$restart_cooldown" ]; then
+            restart_provisioner_if_needed
+            last_restart_time=$current_time
+          else
+            remaining=$((restart_cooldown - (current_time - last_restart_time)))
+            log "Provisioner restart on cooldown, $remaining seconds remaining"
+          fi
+        fi
         
-        last_provisioner_restart = None
-        RESTART_COOLDOWN = timedelta(minutes=5)  # Don't restart more than once per 5 minutes
-        
-        while True:
-            try:
-                # Fix invalid helper pods
-                fix_invalid_helper_pods()
-                
-                # Check for failed PVCs
-                failed_pvcs = get_failed_pvcs()
-                
-                if failed_pvcs:
-                    logger.warning(f"Found {len(failed_pvcs)} PVCs failing due to invalid pod names")
-                    
-                    # Restart provisioner if needed (with cooldown)
-                    now = datetime.now()
-                    if last_provisioner_restart is None or (now - last_provisioner_restart) > RESTART_COOLDOWN:
-                        restart_provisioner_if_needed()
-                        last_provisioner_restart = now
-                
-                time.sleep(WATCH_INTERVAL)
-                
-            except KeyboardInterrupt:
-                logger.info("Controller stopped by user")
-                break
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                time.sleep(WATCH_INTERVAL)
+        sleep "$WATCH_INTERVAL"
+      done
+    }
     
-    if __name__ == "__main__":
-        main()
+    # Run main function
+    main
 

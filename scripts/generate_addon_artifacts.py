@@ -45,7 +45,7 @@ def get_static_images() -> List[Tuple[str, str]]:
         ("registry.k8s.io/metrics-server/metrics-server", metrics_version),
         ("docker.io/rancher/local-path-provisioner", "v0.0.31"),  # Updated to match k3s default
         ("docker.io/library/busybox", "1.36"),  # For local-path-provisioner helper pods
-        ("docker.io/library/python", "3.11-slim"),  # For helper-pod-fix-controller
+        ("docker.io/bitnami/kubectl", "latest"),  # For helper-pod-fix-controller
     ]
 
 
