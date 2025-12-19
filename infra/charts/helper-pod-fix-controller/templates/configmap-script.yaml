@@ -66,7 +66,6 @@ data:
     
     get_failed_pvcs() {
       # Get all PVCs in Pending state and check their events
-      # Use process substitution to avoid subshell issues
       failed_count=0
       
       # Get all pending PVCs
@@ -77,19 +76,20 @@ data:
         return
       fi
       
-      # Process each PVC
+      # Process each PVC and check events
       echo "$pvc_list" | while IFS='|' read -r namespace name; do
         if [ -z "$namespace" ] || [ -z "$name" ]; then
           continue
         fi
         
-        # Check events for invalid pod name errors
-        events=$(kubectl get events -n "$namespace" \
+        # Get events for this PVC - check both reason and message
+        # Use jsonpath to get reason and message together
+        events_output=$(kubectl get events -n "$namespace" \
           --field-selector "involvedObject.name=$name,involvedObject.kind=PersistentVolumeClaim" \
-          -o jsonpath='{.items[*].message}' 2>/dev/null | \
-          grep -iE "Invalid value.*metadata\.name.*-create-pvc-|-delete-pvc-" || echo "")
+          -o jsonpath='{range .items[*]}{.reason}{"|"}{.message}{"\n"}{end}' 2>/dev/null || echo "")
         
-        if [ -n "$events" ]; then
+        # Check if we have ProvisioningFailed with invalid pod name error
+        if echo "$events_output" | grep -qiE "ProvisioningFailed.*Invalid value.*metadata\.name.*-create-pvc-|ProvisioningFailed.*Invalid value.*metadata\.name.*-delete-pvc-"; then
           log_warn "Found failed PVC $namespace/$name due to invalid pod name"
           echo "1"
         else

@@ -639,40 +639,35 @@ jobs:
           
           echo "✅ Helm release installed, waiting for pod to be ready..."
           
-          # Wait for Init-Container and Pod to be ready (with better logging)
-          echo "⏳ Waiting for controller pod to be ready (init container installing dependencies, this may take 3-5 minutes)..."
-          for i in {1..120}; do  # 10 minutes max
+          # Wait for Pod to be ready (no init container anymore)
+          echo "⏳ Waiting for controller pod to be ready..."
+          for i in {1..30}; do  # 2.5 minutes max
             POD_NAME=$(kubectl get pods -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
             
             if [ -n "$POD_NAME" ]; then
-              # Check Init-Container Status
-              INIT_STATUS=$(kubectl get pod "$POD_NAME" -n "$PROVISIONER_NAMESPACE" -o jsonpath='{.status.initContainerStatuses[0].state.terminated.reason}' 2>/dev/null || echo "")
               POD_STATUS=$(kubectl get pod "$POD_NAME" -n "$PROVISIONER_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+              READY=$(kubectl get pod "$POD_NAME" -n "$PROVISIONER_NAMESPACE" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
               
-              if [ "$INIT_STATUS" = "Completed" ] && [ "$POD_STATUS" = "Running" ]; then
-                READY=$(kubectl get pod "$POD_NAME" -n "$PROVISIONER_NAMESPACE" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
-                if [ "$READY" = "true" ]; then
-                  echo "✅ Controller pod is ready!"
-                  break
-                fi
+              if [ "$POD_STATUS" = "Running" ] && [ "$READY" = "true" ]; then
+                echo "✅ Controller pod is ready!"
+                break
               fi
               
-              # Show progress every 30 seconds
-              if [ $((i % 6)) -eq 0 ]; then
-                echo "⏳ Still waiting... (Init: ${INIT_STATUS:-Running}, Pod: $POD_STATUS, Ready: ${READY:-false})"
-                kubectl get pod "$POD_NAME" -n "$PROVISIONER_NAMESPACE" 2>/dev/null || true
+              # Show progress every 10 seconds
+              if [ $((i % 2)) -eq 0 ]; then
+                echo "⏳ Still waiting... (Pod: $POD_STATUS, Ready: $READY)"
               fi
             else
               # Pod not created yet
-              if [ $((i % 6)) -eq 0 ]; then
-                echo "⏳ Waiting for pod to be created... (attempt $i/120)"
+              if [ $((i % 2)) -eq 0 ]; then
+                echo "⏳ Waiting for pod to be created... (attempt $i/30)"
               fi
             fi
             
-            if [ $i -eq 120 ]; then
-              echo "⚠️ Controller pod not ready after 10 minutes, checking status..."
+            if [ $i -eq 30 ]; then
+              echo "⚠️ Controller pod not ready after 2.5 minutes, checking status..."
               kubectl get pods -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller || true
-              kubectl describe pod -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller | tail -50 || true
+              kubectl describe pod -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller | tail -30 || true
               echo "⚠️ Continuing anyway, controller may start later..."
               break
             fi
