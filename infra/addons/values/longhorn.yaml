@@ -1,0 +1,53 @@
+# Longhorn Storage Configuration
+# Enterprise-grade distributed storage for Kubernetes
+
+longhorn:
+  # Enterprise Settings
+  defaultSettings:
+    # Replikation für HA (2 Nodes = 2 Replicas)
+    defaultReplicaCount: "2"
+    # Backup Settings
+    backupstorePollInterval: "300"
+    # Snapshot Settings
+    snapshotDataIntegrity: "fast-check"
+    # Performance
+    guaranteedEngineCPU: "0.25"
+    # Storage
+    defaultDataPath: "/var/lib/longhorn"
+  
+  # UI Access via Ingress
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    hosts:
+      - host: longhorn.local
+        paths:
+          - path: /
+            pathType: Prefix
+  
+  # Persistence
+  persistence:
+    defaultClass: true
+    defaultClassReplicaCount: 2
+  
+  # Image Registry (wird via --set überschrieben)
+  image:
+    longhorn:
+      repository: longhornio/longhorn-manager
+      tag: v1.7.0
+    engine:
+      repository: longhornio/longhorn-engine
+      tag: v1.7.0
+    ui:
+      repository: longhornio/longhorn-ui
+      tag: v1.7.0
+    instanceManager:
+      repository: longhornio/longhorn-instance-manager
+      tag: v1.7.0
+    shareManager:
+      repository: longhornio/longhorn-share-manager
+      tag: v1.7.0
+    backingImageManager:
+      repository: longhornio/longhorn-backing-image-manager
+      tag: v1.7.0
+

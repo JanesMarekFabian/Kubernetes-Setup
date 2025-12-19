@@ -191,8 +191,8 @@ jobs:
             image-map.txt
             infra/addons/values/observability.acr.yaml
 
-  local-path:
-    name: Deploy Local Path Provisioner
+  longhorn:
+    name: Deploy Longhorn Storage
     needs: mirror
     runs-on: self-hosted
     env:
@@ -208,60 +208,140 @@ jobs:
         with:
           kubeconfig: ${{ secrets.KUBECONFIG }}
 
+      - name: Setup Helm
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+          
       - name: Prepare namespace and pull secret
         shell: bash
         run: |
           set -euo pipefail
-          kubectl get ns local-path-storage >/dev/null 2>&1 || kubectl create namespace local-path-storage
+          kubectl get ns longhorn-system >/dev/null 2>&1 || kubectl create namespace longhorn-system
           kubectl create secret docker-registry acr-pull \
             --docker-server="${ACR_REGISTRY}" \
             --docker-username="${ACR_USERNAME}" \
             --docker-password="${ACR_PASSWORD}" \
-            -n local-path-storage \
+            -n longhorn-system \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Check if Local Path Provisioner already exists
-        id: check_provisioner
+      - name: Add Longhorn Helm Repository
         shell: bash
         run: |
           set -euo pipefail
-          # Check for deployment in local-path-storage namespace
-          if kubectl get deployment local-path-provisioner -n local-path-storage >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "namespace=local-path-storage" >> "$GITHUB_OUTPUT"
-            echo "✅ Local Path Provisioner already exists in local-path-storage namespace"
-            exit 0
-          fi
-          # Check for deployment in kube-system namespace (k3s default)
-          if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "namespace=kube-system" >> "$GITHUB_OUTPUT"
-            echo "✅ Local Path Provisioner already exists in kube-system namespace (k3s default)"
-            exit 0
-          fi
-          # Check for StorageClass
-          if kubectl get storageclass local-path >/dev/null 2>&1; then
-            echo "storageclass_exists=true" >> "$GITHUB_OUTPUT"
-            echo "✅ StorageClass 'local-path' already exists"
+          helm repo add longhorn https://charts.longhorn.io
+          helm repo update
+
+      - name: Deploy Longhorn
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Deploying Longhorn..."
+          
+          # Install Longhorn with ACR images
+          helm upgrade --install longhorn longhorn/longhorn \
+            --namespace longhorn-system \
+            --create-namespace \
+            --set longhorn.image.longhorn.repository="${ACR_REGISTRY}/longhornio/longhorn-manager" \
+            --set longhorn.image.longhorn.tag="v1.7.0" \
+            --set longhorn.image.engine.repository="${ACR_REGISTRY}/longhornio/longhorn-engine" \
+            --set longhorn.image.engine.tag="v1.7.0" \
+            --set longhorn.image.ui.repository="${ACR_REGISTRY}/longhornio/longhorn-ui" \
+            --set longhorn.image.ui.tag="v1.7.0" \
+            --set longhorn.image.instanceManager.repository="${ACR_REGISTRY}/longhornio/longhorn-instance-manager" \
+            --set longhorn.image.instanceManager.tag="v1.7.0" \
+            --set longhorn.image.shareManager.repository="${ACR_REGISTRY}/longhornio/longhorn-share-manager" \
+            --set longhorn.image.shareManager.tag="v1.7.0" \
+            --set longhorn.image.backingImageManager.repository="${ACR_REGISTRY}/longhornio/longhorn-backing-image-manager" \
+            --set longhorn.image.backingImageManager.tag="v1.7.0" \
+            --set longhorn.defaultSettings.defaultReplicaCount="2" \
+            --set longhorn.persistence.defaultClass=true \
+            --set longhorn.persistence.defaultClassReplicaCount=2 \
+            --wait --timeout=15m
+          
+          echo "✅ Longhorn deployed"
+          
+          # Patch all Longhorn ServiceAccounts with ACR pull secret
+          echo "🔐 Patching Longhorn ServiceAccounts with ACR pull secret..."
+          for sa in $(kubectl get serviceaccounts -n longhorn-system -o name); do
+            kubectl patch "$sa" -n longhorn-system \
+              --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || \
+            kubectl patch "$sa" -n longhorn-system \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          done
+          
+          echo "✅ ServiceAccounts patched"
+
+      - name: Deploy Cluster Storage Configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Deploying cluster storage configuration via Helm..."
+          
+          # Deploy cluster-storage Helm chart (minimal config for Longhorn)
+          helm upgrade --install cluster-storage ./infra/charts/cluster-storage \
+            --namespace kube-system \
+            --create-namespace \
+            --wait --timeout=2m
+          
+          echo "✅ Cluster storage configuration deployed successfully"
+
+      - name: Verify Longhorn StorageClass
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔍 Verifying Longhorn StorageClass..."
+          
+          # Wait for Longhorn StorageClass to be created
+          for i in {1..30}; do
+            if kubectl get storageclass longhorn >/dev/null 2>&1; then
+              echo "✅ Longhorn StorageClass found"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "⚠️ Longhorn StorageClass not found after 5 minutes"
+              kubectl get storageclass
+              exit 1
+            fi
+            sleep 10
+          done
+          
+          # Set as default if not already
+          if ! kubectl get storageclass longhorn -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' | grep -q "true"; then
+            echo "📝 Setting StorageClass longhorn as default..."
+            kubectl patch storageclass longhorn \
+              -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || echo "⚠️ Failed to patch StorageClass"
           else
-            echo "storageclass_exists=false" >> "$GITHUB_OUTPUT"
+            echo "✅ StorageClass longhorn is already set as default"
           fi
-          echo "exists=false" >> "$GITHUB_OUTPUT"
+          
+          # Show StorageClass details
+          kubectl get storageclass longhorn -o yaml
 
-      - name: Deploy Local Path Provisioner
-        if: steps.check_provisioner.outputs.exists != 'true'
+      - name: Verify Longhorn Pods
         shell: bash
         run: |
           set -euo pipefail
-          curl -sL https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml | \
-            sed "s|rancher/local-path-provisioner:v0.0.26|${ACR_REGISTRY}/rancher/local-path-provisioner:v0.0.26|g" | \
-            kubectl apply -f -
-          sleep 3
-          kubectl patch serviceaccount local-path-provisioner-service-account -n local-path-storage \
-            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
-          kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=5m
+          echo "🔍 Verifying Longhorn pods..."
+          
+          # Wait for Longhorn pods to be ready
+          kubectl wait --for=condition=ready pod -l app=longhorn-manager -n longhorn-system --timeout=10m || {
+            echo "⚠️ Some Longhorn pods not ready, showing status..."
+            kubectl get pods -n longhorn-system
+          }
+          
+          echo "✅ Longhorn pods are ready"
 
-      - name: Configure Local Path Provisioner RBAC
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Longhorn Deployment Summary:"
+          kubectl get pods -n longhorn-system
+          kubectl get storageclass
+          echo ""
+          echo "✅ Longhorn deployment completed successfully!"
         shell: bash
         run: |
           set -euo pipefail
@@ -951,7 +1031,7 @@ jobs:
 
   metrics:
     name: Deploy Metrics Server
-    needs: local-path
+    needs: longhorn
     runs-on: self-hosted
     env:
       ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}

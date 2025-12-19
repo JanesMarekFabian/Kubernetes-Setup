@@ -23,7 +23,7 @@ Dieser Cluster verwendet ein **zentralisiertes Management-System** für gemeinsa
 │ ┌─────────────────────────────────────┐ │
 │ │ kube-system/                       │ │
 │ │   - local-path-provisioner          │ │
-│ │   - ConfigMap: local-path-config   │ │ ← ZENTRAL
+│ │   - StorageClass: longhorn         │ │ ← ZENTRAL
 │ └─────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────┐ │
 │ │ <your-project>/                    │ │
@@ -184,7 +184,7 @@ Braucht deine App Kubernetes API-Zugriffe?
 
 **⚠️ KRITISCH**: Diese Role hat **hohe Rechte** und sollte **NUR für CI/CD-Deployments** verwendet werden, **NICHT für laufende Pods**!
 
-**Für Cluster-Rechte**: Wenn deine App cluster-weite Rechte braucht, konsultiere das **Infrastructure Repo**. Es stellt zentrale ClusterRoles bereit (z.B. `local-path-config-reader`), die Projekte verwenden können.
+**Für Cluster-Rechte**: Wenn deine App cluster-weite Rechte braucht, konsultiere das **Infrastructure Repo**. Es stellt zentrale ClusterRoles bereit (z.B. `longhorn-storage-reader`), die Projekte verwenden können.
 
 #### Zentrale ClusterRoleBinding für Infrastructure Repo
 
@@ -386,11 +386,11 @@ Erstelle eine `RoleBinding` in deinem Projekt:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: local-path-config-reader
+  name: longhorn-storage-reader
   namespace: <your-project-namespace>
 roleRef:
   kind: ClusterRole
-  name: local-path-config-reader  # Wird zentral erstellt
+  name: longhorn-storage-reader  # Wird zentral erstellt
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
@@ -411,7 +411,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path  # Zentrale StorageClass
+  storageClassName: longhorn  # Zentrale StorageClass
   resources:
     requests:
       storage: 10Gi
@@ -472,7 +472,7 @@ metadata:
 - [ ] **Runtime ServiceAccount erstellt** (`<project>-app`) - **NUR wenn Rechte benötigt werden**
 - [ ] **CI/CD RBAC konfiguriert** (`ClusterRoleBinding` an `cicd-deploy-role`) - nur für CI/CD!
 - [ ] **Runtime RBAC konfiguriert** (`Role` + `RoleBinding`) - **NUR wenn Rechte benötigt werden**
-- [ ] **Cluster-Rechte**: Infrastructure Repo konsultiert für zentrale ClusterRoles (z.B. `local-path-config-reader`)
+- [ ] **Cluster-Rechte**: Infrastructure Repo konsultiert für zentrale ClusterRoles (z.B. `longhorn-storage-reader`)
 - [ ] Deployment verwendet korrekten ServiceAccount:
   - `default` (Standard, keine Rechte) ODER
   - `<project>-app` (nur wenn Rechte benötigt werden)
@@ -551,11 +551,11 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: local-path-config-reader
+  name: longhorn-storage-reader
   namespace: my-project
 roleRef:
   kind: ClusterRole
-  name: local-path-config-reader  # ← Zentrale ClusterRole vom Infrastructure Repo
+  name: longhorn-storage-reader  # ← Zentrale ClusterRole vom Infrastructure Repo
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
@@ -601,11 +601,11 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: local-path-config-reader
+  name: longhorn-storage-reader
   namespace: my-project
 roleRef:
   kind: ClusterRole
-  name: local-path-config-reader
+  name: longhorn-storage-reader
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
@@ -625,7 +625,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path
+  storageClassName: longhorn
   resources:
     requests:
       storage: 20Gi
@@ -720,7 +720,7 @@ Braucht deine App Kubernetes API-Zugriffe?
     │   └─ Nur namespace-scoped Rechte
     │
     └─ JA → Konsultiere Infrastructure Repo
-        └─ Verwende zentrale ClusterRoles (z.B. local-path-config-reader)
+        └─ Verwende zentrale ClusterRoles (z.B. longhorn-storage-reader)
         └─ Erstelle ClusterRoleBinding ODER RoleBinding (je nach ClusterRole)
 ```
 
@@ -786,7 +786,7 @@ Braucht deine App Kubernetes API-Zugriffe?
 
 5. **Cluster-Rechte über Infrastructure Repo**:
    - Für Cluster-Rechte immer das Infrastructure Repo konsultieren
-   - Verwende zentrale ClusterRoles (z.B. `local-path-config-reader`)
+   - Verwende zentrale ClusterRoles (z.B. `longhorn-storage-reader`)
    - Erstelle keine eigenen ClusterRoles
 
 4. **Monitoring**:
@@ -814,7 +814,7 @@ Braucht deine App Kubernetes API-Zugriffe?
 
 2. Prüfe, ob RBAC korrekt konfiguriert ist:
    ```bash
-   kubectl get rolebinding local-path-config-reader -n <your-namespace>
+   kubectl get rolebinding longhorn-storage-reader -n <your-namespace>
    ```
 
 3. Prüfe Provisioner-Logs:

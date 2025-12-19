@@ -1,53 +1,19 @@
 # Default values for cluster-storage
-# This chart manages the central storage configuration for local-path-provisioner
-
-localPathProvisioner:
-  # Namespace where the provisioner is deployed
-  # Options: kube-system (k3s default) or local-path-storage (manual deployment)
-  namespace: kube-system
-  
-  # Storage path on nodes
-  storagePath: "/var/lib/rancher/k3s/storage"
-  
-  # ConfigMap configuration
-  configMap:
-    name: local-path-config
-    helperPod:
-      image: ""  # Will be set via --set in workflow (ACR_REGISTRY/busybox:1.36)
-      imagePullPolicy: IfNotPresent
-    setup: |
-      #!/bin/sh
-      set -eu
-      mkdir -p "$VOL_DIR"
-      chmod 0777 "$VOL_DIR"
-    teardown: |
-      #!/bin/sh
-      set -eu
-      rm -rf "$VOL_DIR"
-
-# RBAC configuration for project access
-rbac:
-  # ClusterRole for projects to read the ConfigMap
-  clusterRole:
-    enabled: true
-    name: local-path-config-reader
-  
-  # List of namespaces that should have access (optional, can be managed per-project)
-  projectAccess:
-    enabled: false
-    namespaces: []
-    # Example:
-    # namespaces:
-    #   - database-infrastructure
-    #   - app-namespace
+# This chart manages the central storage configuration for Longhorn
+# Note: Longhorn StorageClass is created by Longhorn itself, this chart
+# only provides configuration and documentation
 
 # StorageClass configuration
+# Longhorn creates its own StorageClass, but we can verify it exists
 storageClass:
-  enabled: true
-  name: local-path
-  provisioner: rancher.io/local-path
+  enabled: false  # Managed by Longhorn Chart
+  name: longhorn
   isDefault: true
-  volumeBindingMode: WaitForFirstConsumer
-  reclaimPolicy: Delete
-  allowVolumeExpansion: false
+
+# RBAC configuration for project access
+# Longhorn has its own RBAC, no additional ClusterRole needed
+rbac:
+  clusterRole:
+    enabled: false  # Not needed with Longhorn
+    name: longhorn-storage-reader
 

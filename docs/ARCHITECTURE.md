@@ -20,10 +20,9 @@ Der Cluster verwendet ein **zentralisiertes Management-System** für gemeinsame 
 ┌─────────────────────────────────────────────────────────┐
 │ LAYER 2: CLUSTER RESOURCES                              │
 │ ┌─────────────────────────────────────────────────────┐ │
-│ │ kube-system/                                        │ │
-│ │   - local-path-provisioner                          │ │
-│ │   - ConfigMap: local-path-config (via Helm)        │ │
-│ │   - ClusterRole: local-path-config-reader          │ │
+│ │ longhorn-system/                                    │ │
+│ │   - Longhorn Storage                                │ │
+│ │   - StorageClass: longhorn                          │ │
 │ └─────────────────────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────────────────────┐ │
 │ │ monitoring/                                         │ │
@@ -40,8 +39,7 @@ Der Cluster verwendet ein **zentralisiertes Management-System** für gemeinsame 
 │ ┌─────────────────────────────────────────────────────┐ │
 │ │ <project-namespace>/                              │ │
 │ │   - App Components                                 │ │
-│ │   - RoleBinding: local-path-config-reader         │ │
-│ │   - PVCs (storageClassName: local-path)           │ │
+│ │   - PVCs (storageClassName: longhorn)              │ │
 │ └─────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -80,7 +78,7 @@ Der Cluster verwendet ein **zentralisiertes Management-System** für gemeinsame 
 
 **Lösung**: 
 - Helm Chart (`cluster-storage`) verwaltet ConfigMap zentral
-- ClusterRole (`local-path-config-reader`) ermöglicht Projekten Lesezugriff
+- Longhorn StorageClass ermöglicht Projekten persistenten Storage
 - Projekte erstellen RoleBinding in ihrem Namespace
 
 **Vorteile**:
@@ -109,14 +107,14 @@ Der Cluster verwendet ein **zentralisiertes Management-System** für gemeinsame 
 ## RBAC-Struktur
 
 ```
-ClusterRole (zentral):
-  - local-path-config-reader
-    └─> ConfigMap: local-path-config (get, list, watch)
+StorageClass (zentral):
+  - longhorn
+    └─> Dynamische Provisionierung von PersistentVolumes
 
-RoleBinding (pro Projekt):
+PVC (pro Projekt):
   - Namespace: <project-namespace>
-  - Subject: <project-serviceaccount>
-  - RoleRef: ClusterRole local-path-config-reader
+  - storageClassName: longhorn
+  - Automatische Provisionierung durch Longhorn
 ```
 
 ## Workflow

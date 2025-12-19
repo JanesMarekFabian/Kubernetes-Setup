@@ -128,18 +128,20 @@ python3 scripts/generate_addon_artifacts.py
 - **Namespace**: `kube-system`
 - Enables `kubectl top` and HorizontalPodAutoscaler
 
-### Local Path Provisioner
-- **Namespace**: `local-path-storage` (or `kube-system` for k3s)
-- Provides local storage via StorageClass `local-path`
+### Longhorn Storage
+- **Namespace**: `longhorn-system`
+- Provides enterprise-grade distributed storage via StorageClass `longhorn`
+- **Features**:
+  - Replication between nodes (HA)
+  - Snapshots and backups
+  - Volume cloning
+  - Web UI for management
+- **StorageClass**: `longhorn` (default storage class)
 
 ### Cluster Storage Configuration
 - **Helm Chart**: `infra/charts/cluster-storage`
-- **Components**:
-  - ConfigMap: `local-path-config` (in provisioner namespace)
-  - ClusterRole: `local-path-config-reader` (for project access)
-  - StorageClass: `local-path` (default storage class)
 - **Purpose**: Centralized management of storage configuration
-- **Integration**: All storage-related configurations are now managed via Helm Chart
+- **Note**: Longhorn creates its own StorageClass, this chart provides minimal configuration
 
 ## Accessing Dashboards
 
@@ -181,9 +183,9 @@ The workflow automatically removes Traefik (k3s default) to avoid port conflicts
 
 ### Storage Issues
 If PVCs remain in "Pending" state:
-1. Check StorageClass exists: `kubectl get storageclass local-path`
-2. Verify RBAC: `kubectl get clusterrole local-path-config-reader`
-3. Check provisioner logs: `kubectl logs -n kube-system -l app=local-path-provisioner`
+1. Check StorageClass exists: `kubectl get storageclass longhorn`
+2. Verify Longhorn pods: `kubectl get pods -n longhorn-system`
+3. Check Longhorn manager logs: `kubectl logs -n longhorn-system -l app=longhorn-manager`
 
 ## Development
 
