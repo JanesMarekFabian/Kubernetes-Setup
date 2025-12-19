@@ -606,13 +606,32 @@ jobs:
             fi
           fi
           
+          # Check if Python image is available in ACR (with library/ prefix)
+          echo "🔍 Checking if Python image is available in ACR..."
+          PYTHON_IMAGE="${ACR_REGISTRY}/library/python:3.11-slim"
+          
+          # Try to check if image exists (using docker manifest inspect if available, or skip check)
+          if command -v docker >/dev/null 2>&1; then
+            if docker manifest inspect "$PYTHON_IMAGE" >/dev/null 2>&1; then
+              echo "✅ Python image found in ACR: $PYTHON_IMAGE"
+            else
+              echo "⚠️ Python image not yet in ACR: $PYTHON_IMAGE"
+              echo "   The image will be mirrored in the mirror job"
+              echo "   Skipping controller deployment for now - will be available after next mirror job"
+              exit 0
+            fi
+          else
+            echo "⚠️ Docker not available for image check, proceeding with deployment..."
+            echo "   If image is not available, deployment will fail and can be retried later"
+          fi
+          
           # Deploy controller (without --wait, we'll wait manually for better control)
           echo "📦 Installing Helper Pod Fix Controller..."
           helm upgrade --install helper-pod-fix-controller ./infra/charts/helper-pod-fix-controller \
             --namespace "$PROVISIONER_NAMESPACE" \
             --create-namespace \
             --set controller.namespace="$PROVISIONER_NAMESPACE" \
-            --set controller.image.repository="${ACR_REGISTRY}/python" \
+            --set controller.image.repository="${ACR_REGISTRY}/library/python" \
             --set controller.image.tag="3.11-slim" \
             --set rbac.enabled=true
           
@@ -630,6 +649,11 @@ jobs:
           else
             echo "⚠️ Warning: ServiceAccount may not have ACR pull secret"
           fi
+          
+          # Clean up old pods to force recreation with new image
+          echo "🧹 Cleaning up old controller pods to force recreation with ACR image..."
+          kubectl delete pods -n "$PROVISIONER_NAMESPACE" -l app.kubernetes.io/name=helper-pod-fix-controller --grace-period=0 --force 2>/dev/null || true
+          sleep 3  # Brief wait for pod deletion
           
           echo "✅ Helm release installed, waiting for pod to be ready..."
           
