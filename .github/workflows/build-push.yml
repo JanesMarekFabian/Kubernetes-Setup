@@ -606,26 +606,8 @@ jobs:
             fi
           fi
           
-          # Check if Python image is available in ACR (with library/ prefix)
-          echo "🔍 Checking if Python image is available in ACR..."
-          PYTHON_IMAGE="${ACR_REGISTRY}/library/python:3.11-slim"
-          
-          # Try to check if image exists (using docker manifest inspect if available, or skip check)
-          if command -v docker >/dev/null 2>&1; then
-            if docker manifest inspect "$PYTHON_IMAGE" >/dev/null 2>&1; then
-              echo "✅ Python image found in ACR: $PYTHON_IMAGE"
-            else
-              echo "⚠️ Python image not yet in ACR: $PYTHON_IMAGE"
-              echo "   The image will be mirrored in the mirror job"
-              echo "   Skipping controller deployment for now - will be available after next mirror job"
-              exit 0
-            fi
-          else
-            echo "⚠️ Docker not available for image check, proceeding with deployment..."
-            echo "   If image is not available, deployment will fail and can be retried later"
-          fi
-          
           # Deploy controller (without --wait, we'll wait manually for better control)
+          # Note: Image path uses library/python as that's how it's stored in ACR
           echo "📦 Installing Helper Pod Fix Controller..."
           helm upgrade --install helper-pod-fix-controller ./infra/charts/helper-pod-fix-controller \
             --namespace "$PROVISIONER_NAMESPACE" \
