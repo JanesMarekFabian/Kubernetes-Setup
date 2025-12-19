@@ -342,12 +342,292 @@ jobs:
           kubectl get storageclass
           echo ""
           echo "✅ Longhorn deployment completed successfully!"
+
+  metrics:
+    name: Deploy Metrics Server
+    needs: longhorn
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Ensure pull secret
         shell: bash
         run: |
           set -euo pipefail
-          # Configure RBAC for local-path-provisioner (supports both k3s and manual deployments)
-          # Check which namespaces have the provisioner
-          HAS_KUBE_SYSTEM=false
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n kube-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+
+      - name: Deploy Metrics Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Deploying Metrics Server from latest GitHub release..."
+          curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | \
+            sed "s|registry.k8s.io/metrics-server/metrics-server|${ACR_REGISTRY}/metrics-server/metrics-server|g" | \
+            kubectl apply -f -
+          
+          # Patch metrics-server ServiceAccount with pull secret (must be done after deployment creates the SA)
+          echo "🔐 Patching metrics-server ServiceAccount with ACR pull secret..."
+          sleep 2
+          kubectl patch serviceaccount metrics-server -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Restart deployment to pick up the new pull secret
+          kubectl rollout restart deployment/metrics-server -n kube-system || true
+          
+          # Wait for rollout
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=5m
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -n kube-system -l k8s-app=metrics-server
+          kubectl get apiservice v1beta1.metrics.k8s.io
+
+  ingress:
+    name: Deploy NGINX Ingress Controller
+    needs: metrics
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Remove Traefik (k3s default) to avoid conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Remove Traefik if it exists (k3s default ingress)
+          if kubectl get deployment traefik -n kube-system >/dev/null 2>&1; then
+            echo "🗑️ Removing Traefik (k3s default) to avoid port conflicts..."
+            kubectl delete deployment traefik -n kube-system --ignore-not-found=true
+            kubectl delete service traefik -n kube-system --ignore-not-found=true
+            kubectl delete daemonset svclb-traefik -n kube-system --ignore-not-found=true
+            echo "✅ Traefik removed"
+          else
+            echo "ℹ️ Traefik not found, skipping removal"
+          fi
+
+      - name: Ensure namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n ingress-nginx \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      - name: Deploy ingress controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --create-namespace \
+            --set controller.image.repository="${ACR_REGISTRY}/ingress-nginx/controller" \
+            --set controller.image.tag="v1.11.1" \
+            --set controller.admissionWebhooks.patch.image.repository="${ACR_REGISTRY}/ingress-nginx/kube-webhook-certgen" \
+            --set controller.admissionWebhooks.patch.image.tag="v20240424-helm-chart-5.1.0" \
+            --set controller.service.type=NodePort \
+            --set controller.service.nodePorts.http=80 \
+            --set controller.service.nodePorts.https=443 \
+            --wait --timeout=5m
+          
+          # Patch ServiceAccounts with ACR pull secret
+          kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          kubectl patch serviceaccount ingress-nginx-admission -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Restart pods to pick up new pull secret
+          kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
+          kubectl rollout restart job/ingress-nginx-admission-create -n ingress-nginx || true
+          kubectl rollout restart job/ingress-nginx-admission-patch -n ingress-nginx || true
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get pods -n ingress-nginx
+          kubectl get svc -n ingress-nginx
+
+  monitoring:
+    name: Deploy Monitoring Stack
+    needs: ingress
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download mirror artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mirror-artifacts
+          path: infra/addons/values/
+
+      - name: Restore generated values
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Restore generated values files if they exist
+          if [ -f "infra/addons/values/observability.acr.yaml" ]; then
+            echo "✅ Found observability.acr.yaml"
+          else
+            echo "⚠️ observability.acr.yaml not found, using defaults"
+          fi
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Prepare namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n monitoring \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy monitoring stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use generated values if available, otherwise use defaults
+          VALUES_FILE="infra/addons/values/observability.acr.yaml"
+          if [ ! -f "$VALUES_FILE" ]; then
+            echo "⚠️ Values file not found, using defaults"
+            VALUES_FILE=""
+          fi
+          
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            ${VALUES_FILE:+--values $VALUES_FILE} \
+            --set prometheusOperator.image.repository="${ACR_REGISTRY}/prometheus-community/kube-prometheus-stack-prometheus-operator" \
+            --set prometheusOperator.image.tag="v0.79.2" \
+            --set prometheus.prometheusSpec.image.repository="${ACR_REGISTRY}/prometheus/prometheus" \
+            --set prometheus.prometheusSpec.image.tag="v2.52.0" \
+            --set grafana.image.repository="${ACR_REGISTRY}/grafana/grafana" \
+            --set grafana.image.tag="11.1.0" \
+            --set alertmanager.alertmanagerSpec.image.repository="${ACR_REGISTRY}/prometheus/alertmanager" \
+            --set alertmanager.alertmanagerSpec.image.tag="v0.28.0" \
+            --set kube-state-metrics.image.repository="${ACR_REGISTRY}/k8s.gcr.io/kube-state-metrics/kube-state-metrics" \
+            --set kube-state-metrics.image.tag="v2.10.2" \
+            --set nodeExporter.image.repository="${ACR_REGISTRY}/prometheus/node-exporter" \
+            --set nodeExporter.image.tag="v1.8.2" \
+            --wait --timeout=15m
+
+      - name: Patch ServiceAccounts after deployment and restart failed jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Patch all ServiceAccounts in monitoring namespace
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name); do
+            kubectl patch "$sa" -n monitoring \
+              --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || \
+            kubectl patch "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          done
+          
+          # Restart deployments/statefulsets to pick up new pull secrets
+          kubectl rollout restart deployment -n monitoring || true
+          kubectl rollout restart statefulset -n monitoring || true
+          
+          # Wait for rollouts
+          kubectl rollout status deployment/kube-prometheus-stack-grafana -n monitoring --timeout=5m || true
+          kubectl rollout status statefulset/kube-prometheus-stack-prometheus -n monitoring --timeout=5m || true
+
+      - name: Collect debug logs from failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Collect logs from failed pods
+          FAILED_PODS=$(kubectl get pods -n monitoring -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name' || echo "")
+          if [ -n "$FAILED_PODS" ]; then
+            echo "⚠️ Found failed pods:"
+            for pod in $FAILED_PODS; do
+              echo "📋 Logs for $pod:"
+              kubectl logs -n monitoring "$pod" --tail=50 || true
+              echo "📋 Describe for $pod:"
+              kubectl describe pod -n monitoring "$pod" | tail -30 || true
+            done
+          fi
+
+      - name: Cleanup failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cleanup failed jobs
+          FAILED_JOBS=$(kubectl get jobs -n monitoring -o json | jq -r '.items[] | select(.status.failed > 0) | .metadata.name' || echo "")
+          if [ -n "$FAILED_JOBS" ]; then
+            echo "🧹 Cleaning up failed jobs..."
+            for job in $FAILED_JOBS; do
+              kubectl delete job -n monitoring "$job" || true
+            done
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Monitoring Stack Summary:"
+          kubectl get pods -n monitoring
+          kubectl get svc -n monitoring
+          echo ""
+          echo "✅ Monitoring stack deployment completed!"
           HAS_LOCAL_PATH_STORAGE=false
           
           if kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1; then
