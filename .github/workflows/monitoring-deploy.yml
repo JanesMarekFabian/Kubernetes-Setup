@@ -1,0 +1,297 @@
+name: Deploy Monitoring Stack
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/monitoring-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip PyYAML
+          echo "VENV_PYTHON=$(pwd)/.venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Setup Helm
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update prometheus-community
+
+      - name: Generate image artifacts
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV_PYTHON" monitoring/scripts/generate_images.py
+          echo "map-file=monitoring/image-map.txt" >> "$GITHUB_OUTPUT"
+          echo "values-file=monitoring/values.acr.yaml" >> "$GITHUB_OUTPUT"
+          
+          # VALIDATION: Check if values.acr.yaml has all images correctly rewritten to ACR
+          echo "🔍 Validating values.acr.yaml - checking if all images are rewritten to ACR..."
+          if [ -f "monitoring/values.acr.yaml" ]; then
+            # Check if quay.io, docker.io or registry.k8s.io are still in the file (should not occur)
+            PUBLIC_REGISTRIES=$(grep -E "(quay\.io|docker\.io|registry\.k8s\.io)" monitoring/values.acr.yaml 2>/dev/null || echo "")
+            if [ -n "$PUBLIC_REGISTRIES" ]; then
+              echo "⚠️ WARNING: Found public registries in values.acr.yaml:"
+              echo "$PUBLIC_REGISTRIES"
+            else
+              echo "✅ No public registries found in values.acr.yaml (all images should use ACR registry)"
+            fi
+          fi
+          
+          # Extract additional images from Helm Chart defaults using helm template
+          echo "🔍 Extracting all images from Helm Chart (including defaults)..."
+          if [ -f "monitoring/values.acr.yaml" ]; then
+            VALUES_FILE="monitoring/values.acr.yaml"
+          elif [ -f "monitoring/values.yaml" ]; then
+            VALUES_FILE="monitoring/values.yaml"
+          else
+            VALUES_FILE=""
+          fi
+          
+          if [ -n "$VALUES_FILE" ]; then
+            HELM_TEMPLATE_OUTPUT=$(helm template kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+              -n monitoring \
+              -f "$VALUES_FILE" 2>/dev/null || echo "")
+            
+            if [ -n "$HELM_TEMPLATE_OUTPUT" ]; then
+              HELM_IMAGES=$(echo "$HELM_TEMPLATE_OUTPUT" | grep -E "^\s+image:" | sed 's/.*image:[[:space:]]*//' | sed 's/"//g' | sed "s/'//g" | sort -u || echo "")
+              
+              if [ -n "$HELM_IMAGES" ]; then
+                echo "📦 Found images from Helm template:"
+                echo "$HELM_IMAGES" | head -20
+                
+                # Add missing images to image-map.txt
+                MISSING_COUNT=0
+                while IFS= read -r image; do
+                  [[ -z "$image" ]] && continue
+                  
+                  if [[ "$image" == *"/"* ]]; then
+                    REGISTRY=$(echo "$image" | cut -d'/' -f1)
+                    REPO_AND_TAG=$(echo "$image" | cut -d'/' -f2-)
+                  else
+                    REGISTRY=""
+                    REPO_AND_TAG="$image"
+                  fi
+                  
+                  if [[ "$REPO_AND_TAG" == *":"* ]]; then
+                    REPO=$(echo "$REPO_AND_TAG" | cut -d':' -f1)
+                    TAG=$(echo "$REPO_AND_TAG" | cut -d':' -f2-)
+                  else
+                    REPO="$REPO_AND_TAG"
+                    TAG="latest"
+                  fi
+                  
+                  if [[ "$REGISTRY" == "docker.io" ]] || [[ "$REGISTRY" == "quay.io" ]] || [[ "$REGISTRY" == "registry.k8s.io" ]]; then
+                    SOURCE_REPO="${REGISTRY}/${REPO}"
+                    TARGET_REPO="$REPO"
+                  elif [ -z "$REGISTRY" ]; then
+                    SOURCE_REPO="docker.io/${REPO}"
+                    TARGET_REPO="$REPO"
+                  else
+                    continue
+                  fi
+                  
+                  if ! grep -qE "^${SOURCE_REPO}\|.*\|${TAG}$|^.*\|${TARGET_REPO}\|${TAG}$" monitoring/image-map.txt 2>/dev/null; then
+                    echo "${SOURCE_REPO}|${TARGET_REPO}|${TAG}" >> monitoring/image-map.txt
+                    echo "  ➕ Added missing image: ${SOURCE_REPO}:${TAG} -> ${ACR_REGISTRY}/${TARGET_REPO}:${TAG}"
+                    MISSING_COUNT=$((MISSING_COUNT + 1))
+                  fi
+                done <<< "$HELM_IMAGES"
+                
+                if [ $MISSING_COUNT -gt 0 ]; then
+                  echo "✅ Added $MISSING_COUNT missing images from Helm Chart defaults to image-map.txt"
+                fi
+              fi
+            fi
+          fi
+
+      - name: Mirror container images
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r SOURCE_REPO TARGET_REPO TAG; do
+            [[ -z "${SOURCE_REPO:-}" ]] && continue
+            SOURCE_IMAGE="${SOURCE_REPO}:${TAG}"
+            TARGET_IMAGE="${ACR_REGISTRY}/${TARGET_REPO}:${TAG}"
+            echo "→ Mirroring $SOURCE_IMAGE to $TARGET_IMAGE"
+            docker pull "$SOURCE_IMAGE"
+            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+            docker push "$TARGET_IMAGE"
+          done < monitoring/image-map.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-mirror-metadata
+          path: |
+            monitoring/image-map.txt
+            monitoring/values.acr.yaml
+
+  deploy:
+    name: Deploy Monitoring Stack
+    needs: mirror
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download mirror artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: monitoring-mirror-metadata
+          path: monitoring/
+
+      - name: Restore generated values
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "monitoring/values.acr.yaml" ]; then
+            echo "✅ Found values.acr.yaml"
+          else
+            echo "⚠️ values.acr.yaml not found, using defaults"
+          fi
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Prepare namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n monitoring \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy monitoring stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use generated values if available, otherwise use defaults
+          VALUES_FILE="monitoring/values.acr.yaml"
+          if [ ! -f "$VALUES_FILE" ]; then
+            echo "⚠️ Values file not found, using defaults"
+            VALUES_FILE="monitoring/values.yaml"
+          fi
+          
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            -f "$VALUES_FILE" \
+            --set prometheusOperator.image.repository="${ACR_REGISTRY}/prometheus-community/kube-prometheus-stack-prometheus-operator" \
+            --set prometheusOperator.image.tag="v0.79.2" \
+            --set prometheus.prometheusSpec.image.repository="${ACR_REGISTRY}/prometheus/prometheus" \
+            --set prometheus.prometheusSpec.image.tag="v2.52.0" \
+            --set grafana.image.repository="${ACR_REGISTRY}/grafana/grafana" \
+            --set grafana.image.tag="11.1.0" \
+            --set alertmanager.alertmanagerSpec.image.repository="${ACR_REGISTRY}/prometheus/alertmanager" \
+            --set alertmanager.alertmanagerSpec.image.tag="v0.28.0" \
+            --set kube-state-metrics.image.repository="${ACR_REGISTRY}/k8s.gcr.io/kube-state-metrics/kube-state-metrics" \
+            --set kube-state-metrics.image.tag="v2.10.2" \
+            --set nodeExporter.image.repository="${ACR_REGISTRY}/prometheus/node-exporter" \
+            --set nodeExporter.image.tag="v1.8.2" \
+            --wait --timeout=15m
+
+      - name: Patch ServiceAccounts after deployment and restart failed jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Patch all ServiceAccounts in monitoring namespace
+          for sa in $(kubectl get serviceaccounts -n monitoring -o name); do
+            kubectl patch "$sa" -n monitoring \
+              --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || \
+            kubectl patch "$sa" -n monitoring \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          done
+          
+          # Restart deployments/statefulsets to pick up new pull secrets
+          kubectl rollout restart deployment -n monitoring || true
+          kubectl rollout restart statefulset -n monitoring || true
+          
+          # Wait for rollouts
+          kubectl rollout status deployment/kube-prometheus-stack-grafana -n monitoring --timeout=5m || true
+          kubectl rollout status statefulset/kube-prometheus-stack-prometheus -n monitoring --timeout=5m || true
+
+      - name: Collect debug logs from failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Collect logs from failed pods
+          FAILED_PODS=$(kubectl get pods -n monitoring -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.name' || echo "")
+          if [ -n "$FAILED_PODS" ]; then
+            echo "⚠️ Found failed pods:"
+            for pod in $FAILED_PODS; do
+              echo "📋 Logs for $pod:"
+              kubectl logs -n monitoring "$pod" --tail=50 || true
+              echo "📋 Describe for $pod:"
+              kubectl describe pod -n monitoring "$pod" | tail -30 || true
+            done
+          fi
+
+      - name: Cleanup failed resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Cleanup failed jobs
+          FAILED_JOBS=$(kubectl get jobs -n monitoring -o json | jq -r '.items[] | select(.status.failed > 0) | .metadata.name' || echo "")
+          if [ -n "$FAILED_JOBS" ]; then
+            echo "🧹 Cleaning up failed jobs..."
+            for job in $FAILED_JOBS; do
+              kubectl delete job -n monitoring "$job" || true
+            done
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Monitoring Stack Summary:"
+          kubectl get pods -n monitoring
+          kubectl get svc -n monitoring
+          echo ""
+          echo "✅ Monitoring stack deployment completed!"
+

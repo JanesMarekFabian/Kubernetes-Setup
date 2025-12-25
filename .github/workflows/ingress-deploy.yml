@@ -1,0 +1,139 @@
+name: Deploy NGINX Ingress Controller
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ingress/**'
+      - '.github/workflows/ingress-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror NGINX Ingress images
+        run: |
+          set -euo pipefail
+          ACR_REGISTRY="${ACR_REGISTRY}"
+          
+          # NGINX Ingress images to mirror
+          INGRESS_IMAGES=(
+            "registry.k8s.io/ingress-nginx/controller:v1.11.1"
+            "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v20240424-helm-chart-5.1.0"
+          )
+          
+          for SOURCE_IMAGE in "${INGRESS_IMAGES[@]}"; do
+            # Extract repo and tag
+            REPO_TAG=$(echo "$SOURCE_IMAGE" | sed 's|registry.k8s.io/||')
+            REPO=$(echo "$REPO_TAG" | cut -d':' -f1)
+            TAG=$(echo "$REPO_TAG" | cut -d':' -f2)
+            TARGET_IMAGE="${ACR_REGISTRY}/${REPO}:${TAG}"
+            
+            echo "→ Mirroring $SOURCE_IMAGE to $TARGET_IMAGE"
+            docker pull "$SOURCE_IMAGE"
+            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+            docker push "$TARGET_IMAGE"
+          done
+
+  deploy:
+    name: Deploy NGINX Ingress Controller
+    needs: mirror
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Remove Traefik (k3s default) to avoid conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Remove Traefik if it exists (k3s default ingress)
+          if kubectl get deployment traefik -n kube-system >/dev/null 2>&1; then
+            echo "🗑️ Removing Traefik (k3s default) to avoid port conflicts..."
+            kubectl delete deployment traefik -n kube-system --ignore-not-found=true
+            kubectl delete service traefik -n kube-system --ignore-not-found=true
+            kubectl delete daemonset svclb-traefik -n kube-system --ignore-not-found=true
+            echo "✅ Traefik removed"
+          else
+            echo "ℹ️ Traefik not found, skipping removal"
+          fi
+
+      - name: Ensure namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create namespace ingress-nginx
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n ingress-nginx \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install helm dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      - name: Deploy ingress controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --create-namespace \
+            --values ingress/values.yaml \
+            --set controller.image.repository="${ACR_REGISTRY}/ingress-nginx/controller" \
+            --set controller.image.tag="v1.11.1" \
+            --set controller.admissionWebhooks.patch.image.repository="${ACR_REGISTRY}/ingress-nginx/kube-webhook-certgen" \
+            --set controller.admissionWebhooks.patch.image.tag="v20240424-helm-chart-5.1.0" \
+            --wait --timeout=5m
+          
+          # Patch ServiceAccounts with ACR pull secret
+          kubectl patch serviceaccount ingress-nginx -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          kubectl patch serviceaccount ingress-nginx-admission -n ingress-nginx \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Restart pods to pick up new pull secret
+          kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
+          kubectl rollout restart job/ingress-nginx-admission-create -n ingress-nginx || true
+          kubectl rollout restart job/ingress-nginx-admission-patch -n ingress-nginx || true
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 NGINX Ingress Controller Deployment Summary:"
+          kubectl get pods -n ingress-nginx
+          kubectl get svc -n ingress-nginx
+          echo ""
+          echo "✅ NGINX Ingress Controller deployment completed successfully!"
+

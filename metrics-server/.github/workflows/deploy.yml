@@ -1,0 +1,123 @@
+name: Deploy Metrics Server
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'metrics-server/**'
+      - '.github/workflows/metrics-server-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Get latest Metrics Server version
+        id: get_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/metrics-server/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Latest metrics-server version: $VERSION"
+
+      - name: Mirror Metrics Server image
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.get_version.outputs.version }}"
+          SOURCE_IMAGE="registry.k8s.io/metrics-server/metrics-server:${VERSION}"
+          TARGET_IMAGE="${ACR_REGISTRY}/metrics-server/metrics-server:${VERSION}"
+          
+          echo "→ Mirroring $SOURCE_IMAGE to $TARGET_IMAGE"
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+
+  deploy:
+    name: Deploy Metrics Server
+    needs: mirror
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Get latest Metrics Server version
+        id: get_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/metrics-server/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Latest metrics-server version: $VERSION"
+
+      - name: Ensure pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n kube-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl patch serviceaccount default -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+
+      - name: Deploy Metrics Server
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.get_version.outputs.version }}"
+          echo "📦 Deploying Metrics Server version ${VERSION}..."
+          
+          curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | \
+            sed "s|registry.k8s.io/metrics-server/metrics-server|${ACR_REGISTRY}/metrics-server/metrics-server|g" | \
+            sed "s|:v[0-9.]*|:${VERSION}|g" | \
+            kubectl apply -f -
+          
+          # Patch metrics-server ServiceAccount with pull secret (must be done after deployment creates the SA)
+          echo "🔐 Patching metrics-server ServiceAccount with ACR pull secret..."
+          sleep 2
+          kubectl patch serviceaccount metrics-server -n kube-system \
+            -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' || true
+          
+          # Restart deployment to pick up the new pull secret
+          kubectl rollout restart deployment/metrics-server -n kube-system || true
+          
+          # Wait for rollout
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=5m
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Metrics Server Deployment Summary:"
+          kubectl get pods -n kube-system -l k8s-app=metrics-server
+          kubectl get apiservice v1beta1.metrics.k8s.io
+          echo ""
+          echo "✅ Metrics Server deployment completed successfully!"
+

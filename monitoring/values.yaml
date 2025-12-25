@@ -7,7 +7,7 @@ grafana:
     enabled: false
   image:
     repository: docker.io/grafana/grafana
-    tag: "10.2.0"
+    tag: "11.1.0"
     registry: ""  # Will be set via --set in workflow
   sidecar:
     dashboards:
@@ -30,7 +30,7 @@ prometheus:
     retention: 7d
     image:
       repository: quay.io/prometheus/prometheus
-      tag: "v2.48.0"
+      tag: "v2.52.0"
       registry: ""  # Will be set via --set in workflow
 
 alertmanager:
@@ -40,29 +40,29 @@ alertmanager:
     nodePort: 30002  # Alertmanager on port 30002 (http://<HOST_IP>:30002)
   image:
     repository: quay.io/prometheus/alertmanager
-    tag: "v0.29.0"  # Helm Chart default version
+    tag: "v0.28.0"  # Helm Chart default version
     registry: ""  # Will be set via --set in workflow
 
 prometheusOperator:
   image:
     repository: quay.io/prometheus-operator/prometheus-operator
-    tag: "v0.86.2"
+    tag: "v0.79.2"
     registry: ""  # Will be set via --set in workflow
   prometheusConfigReloader:
     image:
       repository: quay.io/prometheus-operator/prometheus-config-reloader
-      tag: "v0.86.2"
+      tag: "v0.79.2"
       registry: ""  # Will be set via --set in workflow
   configmapReload:
     prometheus:
       image:
         repository: quay.io/prometheus-operator/prometheus-config-reloader
-        tag: "v0.86.2"
+        tag: "v0.79.2"
         registry: ""  # Will be set via --set in workflow
     alertmanager:
       image:
         repository: quay.io/prometheus-operator/prometheus-config-reloader
-        tag: "v0.86.2"
+        tag: "v0.79.2"
         registry: ""  # Will be set via --set in workflow
   admissionWebhooks:
     patch:
@@ -74,13 +74,12 @@ prometheusOperator:
 "prometheus-node-exporter":
   image:
     repository: quay.io/prometheus/node-exporter
-    tag: "v1.10.2"
+    tag: "v1.8.2"
     registry: ""  # Will be set via --set in workflow
 
 kube-state-metrics:
   image:
     repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
-    tag: "v2.10.1"
+    tag: "v2.10.2"
     registry: ""  # Will be set via --set in workflow
-
 

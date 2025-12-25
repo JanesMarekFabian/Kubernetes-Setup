@@ -1,52 +1,156 @@
-# Kubernetes Project Standards
+# Kubernetes Infrastructure & Project Standards
 
-Dieses Dokument beschreibt die Standards für Projekte, die auf diesem Kubernetes-Cluster deployed werden sollen.
+Dieses Dokument beschreibt die Architektur des Kubernetes-Clusters, die Infrastruktur-Komponenten und die Standards für Projekte, die auf diesem Cluster deployed werden sollen.
 
-## Übersicht
+## Inhaltsverzeichnis
 
-Dieser Cluster verwendet ein **zentralisiertes Management-System** für gemeinsame Infrastruktur-Komponenten. Projekte können diese Komponenten nutzen, müssen sich aber an bestimmte Standards halten.
+1. [Cluster-Architektur](#cluster-architektur)
+2. [Infrastruktur-Komponenten](#infrastruktur-komponenten)
+3. [Projekt-Standards](#projekt-standards)
+4. [RBAC & ServiceAccounts](#rbac--serviceaccounts)
+5. [Storage-Verwaltung](#storage-verwaltung)
+6. [CI/CD & Deployment](#cicd--deployment)
+7. [Troubleshooting](#troubleshooting)
 
-## Architektur-Prinzipien
+---
 
-### 1. Separation of Concerns
+## Cluster-Architektur
+
+### Architektur-Schichten
 
 ```
-┌─────────────────────────────────────────┐
-│ Infrastructure Repo (dieses Repo)      │
-│ - Cluster-weite Komponenten            │
-│ - Base RBAC                             │
-│ - Storage/Networking Setup              │
-└─────────────────────────────────────────┘
-           ↓ (deployed via CI/CD)
-┌─────────────────────────────────────────┐
-│ CLUSTER                                 │
-│ ┌─────────────────────────────────────┐ │
-│ │ kube-system/                       │ │
-│ │   - local-path-provisioner          │ │
-│ │   - StorageClass: longhorn         │ │ ← ZENTRAL
-│ └─────────────────────────────────────┘ │
-│ ┌─────────────────────────────────────┐ │
-│ │ <your-project>/                    │ │
-│ │   - App Components                  │ │
-│ │   - RBAC für Storage-Zugriff       │ │ ← PROJEKT
-│ └─────────────────────────────────────┘ │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ LAYER 1: INFRASTRUCTURE (Dieses Repo)                  │
+│ - Cluster-weite Komponenten                             │
+│ - Base RBAC                                             │
+│ - Storage/Networking Setup                              │
+│ - Monitoring Stack                                      │
+└─────────────────────────────────────────────────────────┘
+                    ↓ (deployed via CI/CD)
+┌─────────────────────────────────────────────────────────┐
+│ LAYER 2: CLUSTER RESOURCES                              │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ longhorn-system/                                    │ │
+│ │   - Longhorn Storage                                │ │
+│ │   - StorageClass: longhorn                          │ │
+│ └─────────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ monitoring/                                         │ │
+│ │   - Prometheus, Grafana, Alertmanager               │ │
+│ └─────────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ ingress-nginx/                                      │ │
+│ │   - NGINX Ingress Controller                        │ │
+│ └─────────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ kube-system/                                        │ │
+│ │   - Metrics Server                                  │ │
+│ └─────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+                    ↓ (projects deploy here)
+┌─────────────────────────────────────────────────────────┐
+│ LAYER 3: PROJECT NAMESPACES                             │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ <project-namespace>/                                │ │
+│ │   - App Components                                   │ │
+│ │   - PVCs (storageClassName: longhorn)               │ │
+│ │   - RBAC für Storage-Zugriff                        │ │
+│ └─────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 2. RBAC: Least Privilege
+### Design-Prinzipien
 
-- **ClusterRoles**: Werden zentral verwaltet (Infrastructure Repo)
-- **RoleBindings**: Werden pro Projekt erstellt
-- **ServiceAccounts**: Pro Projekt, mit minimalen Rechten
+1. **Separation of Concerns**
+   - Infrastructure Repo: Verwaltet Cluster-weite Ressourcen
+   - Project Repos: Verwalten nur ihre eigenen Ressourcen
+   - RBAC: Projekte erhalten minimale, spezifische Rechte
 
-### 3. GitOps-Prinzipien
+2. **GitOps**
+   - Alles ist in Git versioniert
+   - CI/CD automatisiert Deployments
+   - Keine manuellen `kubectl apply` ohne Git-Commit
 
-- ✅ Alles in Git versioniert
-- ✅ Helm Charts für Deployments
-- ✅ CI/CD für automatische Deployments
-- ❌ Keine manuellen `kubectl apply` ohne Git-Commit
+3. **Komponentenbasierte Struktur**
+   - Jede Komponente hat eigenen Ordner und Workflow
+   - Unabhängige Deployments pro Komponente
+   - Helm Charts für alle Komponenten
 
-## Standards für Projekte
+4. **RBAC: Least Privilege**
+   - ClusterRoles für gemeinsame Ressourcen
+   - RoleBindings pro Projekt
+   - ServiceAccounts mit minimalen Rechten
+
+---
+
+## Infrastruktur-Komponenten
+
+### Projekt-Struktur
+
+```
+.
+├── .github/
+│   ├── actions/
+│   │   └── setup-cicd/          # GitHub Action für CI/CD Setup
+│   └── workflows/
+│       ├── longhorn-deploy.yml      # Longhorn Storage Deployment
+│       ├── metrics-server-deploy.yml # Metrics Server Deployment
+│       ├── ingress-deploy.yml       # NGINX Ingress Deployment
+│       └── monitoring-deploy.yml    # Monitoring Stack Deployment
+├── longhorn/                    # Storage-Komponente
+│   ├── values.yaml
+│   └── README.md
+├── metrics-server/              # Metrics-Komponente
+│   └── README.md
+├── ingress/                    # NGINX Ingress Controller
+│   ├── values.yaml
+│   └── README.md
+├── monitoring/                 # Prometheus/Grafana Stack
+│   ├── values.yaml
+│   ├── scripts/
+│   │   └── generate_images.py
+│   └── README.md
+├── infra/
+│   ├── charts/
+│   │   └── cluster-storage/    # Helm Chart für Storage-Konfiguration
+│   ├── rbac/
+│   │   └── cicd-serviceaccount.yaml  # CI/CD RBAC
+│   └── templates/              # Templates für Projekte
+└── docs/
+    └── PROJECT_STANDARDS.md    # Dieses Dokument
+```
+
+### Komponenten-Übersicht
+
+#### Longhorn Storage
+- **Namespace**: `longhorn-system`
+- **StorageClass**: `longhorn` (default)
+- **Features**: Replikation, Snapshots, Backups, Web UI
+- **Workflow**: `.github/workflows/longhorn-deploy.yml`
+- **Konfiguration**: `longhorn/values.yaml`
+
+#### Monitoring Stack
+- **Namespace**: `monitoring`
+- **Komponenten**: Prometheus, Grafana, Alertmanager, Node Exporter, Kube State Metrics
+- **Ports**: Grafana (30000), Prometheus (30001), Alertmanager (30002)
+- **Workflow**: `.github/workflows/monitoring-deploy.yml`
+- **Konfiguration**: `monitoring/values.yaml`
+
+#### NGINX Ingress Controller
+- **Namespace**: `ingress-nginx`
+- **Service Type**: NodePort (HTTP: 80, HTTPS: 443)
+- **Ingress Class**: `nginx`
+- **Workflow**: `.github/workflows/ingress-deploy.yml`
+- **Konfiguration**: `ingress/values.yaml`
+
+#### Metrics Server
+- **Namespace**: `kube-system`
+- **Funktion**: Ermöglicht `kubectl top` und HorizontalPodAutoscaler
+- **Workflow**: `.github/workflows/metrics-server-deploy.yml`
+
+---
+
+## Projekt-Standards
 
 ### 1. Namespace-Struktur
 
@@ -64,9 +168,25 @@ metadata:
 
 ### 2. ServiceAccounts
 
-**Grundprinzip**: Verwende immer zuerst den **`default` ServiceAccount** (keine Cluster-Rechte). Nur wenn spezifische Rechte benötigt werden, erstelle eigene ServiceAccounts.
+#### Entscheidungsbaum
 
-#### 2.0 Default ServiceAccount (Standard)
+```
+Braucht deine App Kubernetes API-Zugriffe?
+│
+├─ NEIN → Verwende default ServiceAccount
+│   └─ Keine RBAC-Konfiguration nötig
+│   └─ Sicherste Option (keine Cluster-Rechte)
+│
+└─ JA → Braucht sie Cluster-weite Rechte?
+    │
+    ├─ NEIN → Erstelle namespace-scoped Role + RoleBinding
+    │   └─ Verwende default ODER eigenen ServiceAccount
+    │
+    └─ JA → Konsultiere Infrastructure Repo
+        └─ Verwende zentrale ClusterRoles (z.B. longhorn-storage-reader)
+```
+
+#### Default ServiceAccount (Standard)
 
 **Empfehlung**: Die meisten Pods können den `default` ServiceAccount verwenden:
 
@@ -90,30 +210,11 @@ spec:
 - ✅ Keine Cluster-Rechte (sicher)
 - ✅ Funktioniert für die meisten einfachen Anwendungen
 
-**Verwende `default`, wenn:**
-- App braucht keine Kubernetes API-Zugriffe
-- App braucht keine ConfigMaps/Secrets aus anderen Namespaces
-- App braucht keine RBAC-Rechte
+#### CI/CD ServiceAccount (für Deployments)
 
-#### 2.1 Eigene ServiceAccounts (nur bei Bedarf)
-
-**Erstelle eigene ServiceAccounts nur wenn:**
-- App braucht spezifische RBAC-Rechte (z.B. Lesen von ConfigMaps)
-- App braucht ImagePullSecrets
-- App braucht Zugriff auf cluster-weite Ressourcen
-
-**Für Cluster-Rechte**: Konsultiere das **Infrastructure Repo** - es stellt zentrale ClusterRoles bereit, die Projekte verwenden können.
-
-#### 2.2 CI/CD ServiceAccount (für Deployments)
-
-Dieser ServiceAccount wird **nur von der CI/CD-Pipeline** verwendet und hat hohe Rechte, um Ressourcen zu erstellen/löschen:
-
-#### 2.1 CI/CD ServiceAccount (für Deployments)
-
-Dieser ServiceAccount wird **nur von der CI/CD-Pipeline** verwendet und hat hohe Rechte, um Ressourcen zu erstellen/löschen:
+**Wichtig**: Dieser ServiceAccount wird **nur von der CI/CD-Pipeline** verwendet:
 
 ```yaml
-# k8s/serviceaccount-cicd.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -122,26 +223,17 @@ metadata:
   labels:
     app.kubernetes.io/name: <project>
     app.kubernetes.io/component: cicd
-    app.kubernetes.io/managed-by: helm
 ```
 
 **Sicherheitshinweise:**
 - ⚠️ **NUR für CI/CD verwenden** - niemals für laufende Pods!
-- ⚠️ Wird nur während Deployments aktiv verwendet
 - ⚠️ Hat cluster-weite Rechte (via ClusterRoleBinding)
 
-#### 2.3 Runtime ServiceAccount (nur wenn Rechte benötigt werden)
+#### Runtime ServiceAccount (nur wenn Rechte benötigt werden)
 
-**WICHTIG**: Erstelle diesen ServiceAccount **nur**, wenn deine App spezifische Rechte benötigt. Für die meisten Apps reicht der `default` ServiceAccount!
-
-**Erstelle einen Runtime ServiceAccount nur wenn:**
-- App braucht Lesen von ConfigMaps/Secrets (über `get` hinaus)
-- App braucht ImagePullSecrets
-- App braucht Zugriff auf Storage-ConfigMaps (z.B. `local-path-config`)
+**WICHTIG**: Erstelle diesen ServiceAccount **nur**, wenn deine App spezifische Rechte benötigt:
 
 ```yaml
-# k8s/serviceaccount-runtime.yaml
-# NUR erstellen wenn wirklich benötigt!
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -150,78 +242,19 @@ metadata:
   labels:
     app.kubernetes.io/name: <project>
     app.kubernetes.io/component: runtime
-    app.kubernetes.io/managed-by: helm
 ```
 
-**Sicherheitshinweise:**
-- ✅ **Nur für laufende Pods** verwenden
-- ✅ Namespace-scoped Rechte (keine ClusterRoleBinding)
-- ✅ Nur die Rechte, die die App tatsächlich braucht
-- ⚠️ **Nicht erstellen**, wenn `default` ausreicht!
+---
 
-### 3. RBAC und Cluster-Rechte
+## RBAC & ServiceAccounts
 
-#### 3.1 Grundprinzip: Default zuerst, Cluster-Rechte über Infrastructure Repo
+### CI/CD RBAC
 
-**Entscheidungsbaum:**
+**Wichtig**: Der Cluster stellt eine zentrale `cicd-deploy-role` bereit. Projekte müssen **keine eigenen ClusterRoles** erstellen.
 
-```
-Braucht deine App Kubernetes API-Zugriffe?
-├─ NEIN → Verwende default ServiceAccount (keine RBAC nötig)
-└─ JA → Braucht sie Cluster-weite Rechte?
-    ├─ NEIN → Erstelle namespace-scoped Role + RoleBinding
-    └─ JA → Konsultiere Infrastructure Repo für zentrale ClusterRoles
-```
-
-**Wichtig**: 
-- ✅ **Default ServiceAccount** ist die erste Wahl (keine Cluster-Rechte)
-- ✅ Für **Cluster-Rechte**: Das **Infrastructure Repo** stellt zentrale ClusterRoles bereit
-- ❌ **Keine eigenen ClusterRoles** erstellen - verwende die zentralen!
-
-#### 3.2 CI/CD RBAC (Zentrale ClusterRole)
-
-**Wichtig**: Der Cluster stellt eine zentrale `cicd-deploy-role` bereit, die alle notwendigen Rechte für CI/CD-Deployments enthält. Projekte müssen **keine eigenen ClusterRoles** erstellen, sondern binden ihren **CI/CD ServiceAccount** an diese zentrale Role.
-
-**⚠️ KRITISCH**: Diese Role hat **hohe Rechte** und sollte **NUR für CI/CD-Deployments** verwendet werden, **NICHT für laufende Pods**!
-
-**Für Cluster-Rechte**: Wenn deine App cluster-weite Rechte braucht, konsultiere das **Infrastructure Repo**. Es stellt zentrale ClusterRoles bereit (z.B. `longhorn-storage-reader`), die Projekte verwenden können.
-
-#### Zentrale ClusterRoleBinding für Infrastructure Repo
-
-Das **Infrastructure Repo** erstellt eine zentrale `ClusterRoleBinding` namens `cicd-deploy-binding`, die den `cicd-deploy` ServiceAccount (im `kube-system` Namespace) an die `cicd-deploy-role` bindet:
+#### Projekt-spezifische ClusterRoleBinding
 
 ```yaml
-# infra/rbac/cicd-serviceaccount.yaml (Infrastructure Repo)
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: cicd-deploy-binding  # ← Zentraler Name (reserviert!)
-  labels:
-    app.kubernetes.io/name: cicd
-    app.kubernetes.io/component: rbac
-    app.kubernetes.io/managed-by: infrastructure-repo
-    app.kubernetes.io/part-of: cicd-infrastructure
-  annotations:
-    description: "Central ClusterRoleBinding for CI/CD deployments - binds cicd-deploy ServiceAccount to cicd-deploy-role"
-    managed-by: "Infrastructure Repository"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cicd-deploy-role
-subjects:
-  - kind: ServiceAccount
-    name: cicd-deploy
-    namespace: kube-system
-```
-
-**⚠️ Wichtig**: Der Name `cicd-deploy-binding` ist **reserviert** für das Infrastructure Repo. Projekte dürfen **keine** ClusterRoleBinding mit diesem Namen erstellen, da dies zu Namenskonflikten führt!
-
-#### Schritt 1: Projekt-spezifische ClusterRoleBinding erstellen
-
-Erstelle ein `ClusterRoleBinding` in deinem Projekt, das deinen ServiceAccount an die zentrale `cicd-deploy-role` bindet:
-
-```yaml
-# k8s/rbac/cicd-binding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -229,129 +262,38 @@ metadata:
   labels:
     app.kubernetes.io/name: <project>
     app.kubernetes.io/component: cicd-rbac
-    app.kubernetes.io/managed-by: helm
 roleRef:
   kind: ClusterRole
-  name: cicd-deploy-role  # Zentrale ClusterRole (wird vom Infrastructure Repo bereitgestellt)
+  name: cicd-deploy-role  # Zentrale ClusterRole
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
-    name: <project>-deploy  # ← CI/CD ServiceAccount (NICHT Runtime!)
+    name: <project>-deploy  # CI/CD ServiceAccount
     namespace: <project-namespace>
 ```
 
 **⚠️ Wichtig**: 
 - Binde hier **NUR** den CI/CD ServiceAccount (`<project>-deploy`), **NICHT** den Runtime ServiceAccount!
-- Verwende einen **eindeutigen Namen** für deine ClusterRoleBinding: `<project>-cicd-deploy-binding` (z.B. `database-infrastructure-cicd-deploy-binding`)
+- Verwende einen **eindeutigen Namen**: `<project>-cicd-deploy-binding`
 - **NICHT** `cicd-deploy-binding` verwenden - dieser Name ist für das Infrastructure Repo reserviert!
 
-#### Was die `cicd-deploy-role` enthält
+### Runtime RBAC (nur wenn Rechte benötigt werden)
 
-Die zentrale `cicd-deploy-role` gewährt folgende Rechte:
+**Wichtig**: Die meisten Apps brauchen **keine RBAC** und können den `default` ServiceAccount verwenden.
 
-- ✅ **RBAC Management**: Erstellen/Verwalten von Roles und RoleBindings
-- ✅ **Storage Classes**: Lesen/Verwalten von StorageClasses
-- ✅ **Namespaces**: Erstellen/Lesen von Namespaces
-- ✅ **Core Resources**: ConfigMaps, Secrets, Services, Pods, Endpoints
-- ✅ **Persistent Volume Claims**: Vollständige PVC-Verwaltung (CRITICAL für PVC-basierte Deployments)
-- ✅ **Apps Resources**: Deployments, StatefulSets, DaemonSets
-- ✅ **Ingress Resources**: Ingresses und IngressClasses
-- ✅ **Service Accounts**: Erstellen/Verwalten von ServiceAccounts
-- ✅ **Nodes**: Lesen von Node-Informationen (für Debugging)
-- ✅ **Metrics**: Lesen von Metriken (für Monitoring)
-
-**Vorteile der zentralen Role:**
-- ✅ Konsistente Rechte für alle Projekte
-- ✅ Zentrale Verwaltung und Updates
-- ✅ Keine Duplikation von RBAC-Konfigurationen
-- ✅ Einfacheres Troubleshooting
-
-#### Validierung der zentralen ClusterRoleBinding
-
-Um zu prüfen, ob die zentrale `cicd-deploy-binding` existiert und funktioniert:
-
-```bash
-# Prüfe, ob die ClusterRoleBinding existiert
-kubectl get clusterrolebinding cicd-deploy-binding
-
-# Prüfe die Details der Binding
-kubectl get clusterrolebinding cicd-deploy-binding -o yaml
-
-# Prüfe, ob der cicd-deploy ServiceAccount die Rechte hat
-kubectl auth can-i create namespaces --as=system:serviceaccount:kube-system:cicd-deploy
-kubectl auth can-i get rolebindings --as=system:serviceaccount:kube-system:cicd-deploy
-kubectl auth can-i patch namespaces --as=system:serviceaccount:kube-system:cicd-deploy
-```
-
-**Falls die ClusterRoleBinding fehlt:**
-- Die zentrale `cicd-deploy-binding` wird automatisch vom Infrastructure Repo erstellt
-- Sie wird über die `setup-cicd` GitHub Action deployed
-- Falls sie fehlt, führe den Infrastructure Repo Workflow aus oder kontaktiere das Infrastructure Team
-
-**Sicherheitshinweise:**
-- ⚠️ Diese Role hat **cluster-weite Rechte** (ClusterRoleBinding)
-- ⚠️ Projekte können Ressourcen in **allen Namespaces** sehen/manipulieren
-- ⚠️ **NUR für CI/CD verwenden** - niemals für Runtime-Pods!
-- ✅ CI/CD-Systeme sind vertrauenswürdig (GitHub Actions mit Secrets)
-- ✅ Runtime-Pods verwenden separate ServiceAccounts mit minimalen Rechten
-
-#### Helm Template-Beispiel
-
-Für Helm Charts kannst du die RBAC-Binding als Template erstellen:
+#### Beispiel: Namespace-scoped Role
 
 ```yaml
-# charts/<your-app>/templates/cicd-binding.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ include "<your-app>.fullname" . }}-cicd-deploy
-  labels:
-    {{- include "<your-app>.labels" . | nindent 4 }}
-    app.kubernetes.io/component: cicd-rbac
-roleRef:
-  kind: ClusterRole
-  name: cicd-deploy-role
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "<your-app>.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
-```
-
-### 4. Runtime RBAC (nur wenn Rechte benötigt werden)
-
-**Wichtig**: Die meisten Apps brauchen **keine RBAC** und können den `default` ServiceAccount verwenden. Erstelle RBAC **nur**, wenn deine App wirklich Rechte benötigt.
-
-**Erstelle Runtime RBAC nur wenn:**
-- App braucht Lesen von ConfigMaps/Secrets (über `get` hinaus)
-- App braucht Zugriff auf Storage-ConfigMaps
-- App braucht andere namespace-scoped Rechte
-
-**Für Cluster-Rechte**: Konsultiere das **Infrastructure Repo** - es stellt zentrale ClusterRoles bereit.
-
-#### Beispiel: Namespace-scoped Role (nur wenn benötigt)
-
-```yaml
-# k8s/rbac/runtime-role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: <project>-app-role
   namespace: <project-namespace>
-  labels:
-    app.kubernetes.io/name: <project>
-    app.kubernetes.io/component: runtime-rbac
-    app.kubernetes.io/managed-by: helm
 rules:
-  # Beispiel: Nur was die App wirklich braucht
   - apiGroups: [""]
     resources: ["configmaps", "secrets"]
-    verbs: ["get", "list"]  # ← Nur Lesen, kein Erstellen/Löschen!
-  # Weitere Rechte je nach Anforderung der App
-```
-
-```yaml
-# k8s/rbac/runtime-binding.yaml
+    verbs: ["get", "list"]  # Nur Lesen!
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -363,44 +305,23 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
-    name: <project>-app  # ← Runtime ServiceAccount
+    name: <project>-app
     namespace: <project-namespace>
 ```
 
-**Sicherheitsprinzipien für Runtime RBAC:**
+**Sicherheitsprinzipien:**
 - ✅ **Default zuerst**: Verwende `default` ServiceAccount wenn möglich
 - ✅ **Least Privilege**: Nur die Rechte, die die App wirklich braucht
-- ✅ **Namespace-scoped**: Keine ClusterRoleBinding für Runtime (außer zentrale ClusterRoles vom Infrastructure Repo)
-- ✅ **Read-only wo möglich**: ConfigMaps/Secrets nur lesen, nicht schreiben
-- ✅ **Keine RBAC-Verwaltung**: Runtime-Pods können keine Roles/RoleBindings erstellen
-- ✅ **Zentrale ClusterRoles**: Für Cluster-Rechte immer das Infrastructure Repo konsultieren
+- ✅ **Namespace-scoped**: Keine ClusterRoleBinding für Runtime
+- ✅ **Read-only wo möglich**: ConfigMaps/Secrets nur lesen
 
-### 5. Storage-Zugriff (Local Path Provisioner)
+---
 
-#### Schritt 1: RBAC für Storage-Zugriff
+## Storage-Verwaltung
 
-Erstelle eine `RoleBinding` in deinem Projekt:
+### Longhorn StorageClass
 
-```yaml
-# k8s/rbac/storage-access.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: longhorn-storage-reader
-  namespace: <your-project-namespace>
-roleRef:
-  kind: ClusterRole
-  name: longhorn-storage-reader  # Wird zentral erstellt
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: <your-service-account>
-    namespace: <your-project-namespace>
-```
-
-#### Schritt 2: PVC mit StorageClass
-
-Verwende die zentrale StorageClass:
+Der Cluster verwendet **Longhorn** als Standard-StorageClass:
 
 ```yaml
 apiVersion: v1
@@ -417,7 +338,51 @@ spec:
       storage: 10Gi
 ```
 
-### 6. Helm Chart-Struktur
+### Storage RBAC (nur wenn benötigt)
+
+Falls deine App Zugriff auf Storage-ConfigMaps benötigt:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: longhorn-storage-reader
+  namespace: <your-project-namespace>
+roleRef:
+  kind: ClusterRole
+  name: longhorn-storage-reader  # Zentrale ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: <your-service-account>
+    namespace: <your-project-namespace>
+```
+
+**Templates**: Siehe `infra/templates/project-storage-rbac.yaml` oder `infra/templates/project-storage-rbac-helm.yaml`
+
+---
+
+## CI/CD & Deployment
+
+### GitHub Actions Workflows
+
+Jede Komponente hat einen eigenen Workflow:
+- **Trigger**: Push zu `main` Branch wenn Dateien in der Komponente geändert werden
+- **Manuell**: Via `workflow_dispatch`
+- **Schritte**: Image Mirroring → Deployment
+
+### Image Registry
+
+**Wichtig**: Alle Images müssen über Azure Container Registry (ACR) bereitgestellt werden.
+
+```yaml
+image:
+  registry: <your-acr-registry>.azurecr.io
+  repository: <your-image>
+  tag: "latest"
+```
+
+### Helm Chart-Struktur
 
 Projekte sollten Helm Charts verwenden:
 
@@ -432,25 +397,13 @@ your-project/
 │           ├── service.yaml
 │           ├── pvc.yaml
 │           └── rbac/
-│               ├── cicd-binding.yaml      # CI/CD RBAC (ClusterRoleBinding)
-│               └── storage-access.yaml    # Storage RBAC (RoleBinding)
+│               ├── cicd-binding.yaml      # CI/CD RBAC
+│               └── storage-access.yaml    # Storage RBAC (optional)
 └── values/
     └── production.yaml
 ```
 
-### 7. Image-Registry
-
-**Wichtig**: Alle Images müssen über Azure Container Registry (ACR) bereitgestellt werden.
-
-```yaml
-# In values.yaml
-image:
-  registry: <your-acr-registry>.azurecr.io
-  repository: <your-image>
-  tag: "latest"
-```
-
-### 8. Labels und Annotations
+### Labels und Annotations
 
 Verwende standardisierte Labels:
 
@@ -464,15 +417,17 @@ metadata:
     app.kubernetes.io/component: <component-type>
 ```
 
+---
+
 ## Checkliste für neue Projekte
 
 - [ ] Namespace erstellt
 - [ ] **Default ServiceAccount geprüft** - reicht er für die App aus?
 - [ ] **CI/CD ServiceAccount erstellt** (`<project>-deploy`) - für Deployments
 - [ ] **Runtime ServiceAccount erstellt** (`<project>-app`) - **NUR wenn Rechte benötigt werden**
-- [ ] **CI/CD RBAC konfiguriert** (`ClusterRoleBinding` an `cicd-deploy-role`) - nur für CI/CD!
+- [ ] **CI/CD RBAC konfiguriert** (`ClusterRoleBinding` an `cicd-deploy-role`)
 - [ ] **Runtime RBAC konfiguriert** (`Role` + `RoleBinding`) - **NUR wenn Rechte benötigt werden**
-- [ ] **Cluster-Rechte**: Infrastructure Repo konsultiert für zentrale ClusterRoles (z.B. `longhorn-storage-reader`)
+- [ ] **Storage RBAC konfiguriert** (nur wenn Storage-ConfigMap-Zugriff benötigt)
 - [ ] Deployment verwendet korrekten ServiceAccount:
   - `default` (Standard, keine Rechte) ODER
   - `<project>-app` (nur wenn Rechte benötigt werden)
@@ -482,270 +437,59 @@ metadata:
 - [ ] CI/CD Pipeline konfiguriert
 - [ ] Dokumentation erstellt
 
-## Beispiel: Vollständiges Projekt-Setup
-
-### 1. Namespace und ServiceAccounts
-
-```yaml
-# k8s/namespace.yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: my-project
 ---
-# CI/CD ServiceAccount (für Deployments) - IMMER benötigt
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: my-project-deploy
-  namespace: my-project
-  labels:
-    app.kubernetes.io/name: my-project
-    app.kubernetes.io/component: cicd
+
+## Troubleshooting
+
+### PVC bleibt im Status "Pending"
+
+1. Prüfe, ob StorageClass existiert:
+   ```bash
+   kubectl get storageclass longhorn
+   ```
+
+2. Prüfe, ob RBAC korrekt konfiguriert ist:
+   ```bash
+   kubectl get rolebinding longhorn-storage-reader -n <your-namespace>
+   ```
+
+3. Prüfe Longhorn Pods:
+   ```bash
+   kubectl get pods -n longhorn-system
+   kubectl logs -n longhorn-system -l app=longhorn-manager
+   ```
+
+### ImagePullBackOff
+
+1. Prüfe, ob Image in ACR vorhanden ist
+2. Prüfe ServiceAccount ImagePullSecrets:
+   ```bash
+   kubectl get serviceaccount <sa-name> -n <namespace> -o yaml
+   ```
+
+### RBAC-Probleme
+
+1. Prüfe ClusterRole:
+   ```bash
+   kubectl get clusterrole cicd-deploy-role
+   kubectl get clusterrole longhorn-storage-reader
+   ```
+
+2. Prüfe ClusterRoleBinding:
+   ```bash
+   kubectl get clusterrolebinding <project>-cicd-deploy-binding
+   ```
+
+3. Teste Zugriff:
+   ```bash
+   kubectl auth can-i create namespaces --as=system:serviceaccount:<namespace>:<serviceaccount>
+   ```
+
 ---
-# Runtime ServiceAccount (NUR wenn Rechte benötigt werden)
-# Für die meisten Apps reicht der default ServiceAccount!
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: my-project-app
-  namespace: my-project
-  labels:
-    app.kubernetes.io/name: my-project
-    app.kubernetes.io/component: runtime
-```
 
-**Hinweis**: Der `default` ServiceAccount wird automatisch erstellt - du musst ihn nicht explizit definieren. Verwende ihn einfach, indem du `serviceAccountName` im Deployment weglässt.
+## Sicherheitsbest Practices
 
-### 2. CI/CD RBAC
-
-```yaml
-# k8s/rbac/cicd-binding.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: my-project-cicd-deploy-binding
-  labels:
-    app.kubernetes.io/name: my-project
-    app.kubernetes.io/component: cicd-rbac
-    app.kubernetes.io/managed-by: helm
-roleRef:
-  kind: ClusterRole
-  name: cicd-deploy-role  # Zentrale ClusterRole
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: my-project-deploy
-    namespace: my-project
-```
-
-### 3. Runtime RBAC (nur wenn benötigt)
-
-**Wichtig**: Erstelle diese RBAC-Konfiguration **nur**, wenn deine App wirklich Rechte benötigt. Für die meisten Apps reicht der `default` ServiceAccount ohne RBAC.
-
-**Beispiel**: App braucht Lesen von Storage-ConfigMap (konsultiere Infrastructure Repo für zentrale ClusterRole):
-
-```yaml
-# k8s/rbac/storage-access.yaml
-# Verwendet zentrale ClusterRole vom Infrastructure Repo
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: longhorn-storage-reader
-  namespace: my-project
-roleRef:
-  kind: ClusterRole
-  name: longhorn-storage-reader  # ← Zentrale ClusterRole vom Infrastructure Repo
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: my-project-app  # ODER default, wenn kein eigener ServiceAccount
-    namespace: my-project
-```
-
-**Für eigene namespace-scoped Rechte** (nur wenn wirklich benötigt):
-
-```yaml
-# k8s/rbac/runtime-role.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: my-project-app-role
-  namespace: my-project
-rules:
-  # Beispiel: App braucht nur Lesen von ConfigMaps/Secrets
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
-    verbs: ["get", "list"]
----
-# k8s/rbac/runtime-binding.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: my-project-app-binding
-  namespace: my-project
-roleRef:
-  kind: Role
-  name: my-project-app-role
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: my-project-app
-    namespace: my-project
-```
-
-### 4. Storage-RBAC
-
-```yaml
-# k8s/rbac/storage-access.yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: longhorn-storage-reader
-  namespace: my-project
-roleRef:
-  kind: ClusterRole
-  name: longhorn-storage-reader
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: my-project-deploy
-    namespace: my-project
-```
-
-### 5. PVC-Beispiel
-
-```yaml
-# k8s/pvc.yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: my-project-data
-  namespace: my-project
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: longhorn
-  resources:
-    requests:
-      storage: 20Gi
-```
-
-### 6. Deployment mit PVC
-
-**Beispiel 1: Mit default ServiceAccount (Standard, keine Rechte)**
-
-```yaml
-# k8s/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-  namespace: my-project
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      # Kein serviceAccountName = verwendet default (keine Cluster-Rechte)
-      containers:
-      - name: app
-        image: <acr-registry>.azurecr.io/my-app:latest
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: my-project-data
-```
-
-**Beispiel 2: Mit eigenem Runtime ServiceAccount (nur wenn Rechte benötigt)**
-
-```yaml
-# k8s/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-  namespace: my-project
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      serviceAccountName: my-project-app  # ← NUR wenn Rechte benötigt werden!
-      containers:
-      - name: app
-        image: <acr-registry>.azurecr.io/my-app:latest
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: my-project-data
-```
-
-**⚠️ Wichtig**: 
-- ✅ **Standard**: Verwende `default` ServiceAccount (kein `serviceAccountName` nötig)
-- ⚠️ **Nur bei Bedarf**: Verwende eigenen Runtime ServiceAccount (`my-project-app`)
-- ❌ **NIEMALS**: Verwende CI/CD ServiceAccount (`my-project-deploy`) für laufende Pods!
-
-## Sicherheit: ServiceAccount-Strategie
-
-### Entscheidungsbaum für ServiceAccounts
-
-```
-Braucht deine App Kubernetes API-Zugriffe?
-│
-├─ NEIN → Verwende default ServiceAccount
-│   └─ Keine RBAC-Konfiguration nötig
-│   └─ Sicherste Option (keine Cluster-Rechte)
-│
-└─ JA → Braucht sie Cluster-weite Rechte?
-    │
-    ├─ NEIN → Erstelle namespace-scoped Role + RoleBinding
-    │   └─ Verwende default ODER eigenen ServiceAccount
-    │   └─ Nur namespace-scoped Rechte
-    │
-    └─ JA → Konsultiere Infrastructure Repo
-        └─ Verwende zentrale ClusterRoles (z.B. longhorn-storage-reader)
-        └─ Erstelle ClusterRoleBinding ODER RoleBinding (je nach ClusterRole)
-```
-
-### Warum verschiedene ServiceAccounts?
-
-**Default ServiceAccount** (Standard):
-- ✅ **Keine Cluster-Rechte** - sicherste Option
-- ✅ **Automatisch vorhanden** - keine Konfiguration nötig
-- ✅ **Für die meisten Apps ausreichend** - keine Kubernetes API-Zugriffe
-- ✅ **Empfohlene erste Wahl** - verwende immer zuerst
-
-**CI/CD ServiceAccount** (`<project>-deploy`):
-- ✅ **Hohe Rechte notwendig** - muss Ressourcen erstellen/löschen
-- ✅ **Nur während Deployments aktiv** - nicht dauerhaft laufend
-- ✅ **Vertrauenswürdiges System** - GitHub Actions mit Secrets
-- ⚠️ **Cluster-weite Rechte** - kann Ressourcen in allen Namespaces sehen/manipulieren
-
-**Runtime ServiceAccount** (`<project>-app` - nur wenn benötigt):
-- ✅ **Minimale Rechte** - nur was die App wirklich braucht
-- ✅ **Namespace-scoped** - kann nur eigene Namespace-Ressourcen sehen
-- ✅ **Dauerhaft laufend** - Pods laufen kontinuierlich
-- ✅ **Least Privilege** - minimiert Angriffsfläche bei Kompromittierung
-- ⚠️ **Nur erstellen wenn wirklich benötigt** - default zuerst verwenden!
-
-### Sicherheitsbest Practices
+### ServiceAccount-Strategie
 
 1. **Default zuerst verwenden**:
    ```yaml
@@ -755,12 +499,6 @@ Braucht deine App Kubernetes API-Zugriffe?
        spec:
          # Kein serviceAccountName = verwendet default
          containers: [...]
-   
-   # ⚠️ NUR wenn Rechte benötigt werden: Eigener ServiceAccount
-   spec:
-     template:
-       spec:
-         serviceAccountName: my-project-app  # ← NUR wenn wirklich benötigt
    ```
 
 2. **Trennung strikt einhalten**:
@@ -784,57 +522,27 @@ Braucht deine App Kubernetes API-Zugriffe?
    - Keine RBAC-Verwaltung für Runtime-Pods
    - Keine eigenen ClusterRoles - verwende zentrale vom Infrastructure Repo
 
-5. **Cluster-Rechte über Infrastructure Repo**:
-   - Für Cluster-Rechte immer das Infrastructure Repo konsultieren
-   - Verwende zentrale ClusterRoles (z.B. `longhorn-storage-reader`)
-   - Erstelle keine eigenen ClusterRoles
-
-4. **Monitoring**:
-   - Überwache, welche ServiceAccounts von Pods verwendet werden
-   - Alarme bei Verwendung von CI/CD ServiceAccounts in Deployments
-
 ### Risikobewertung
 
 | Aspekt | Default ServiceAccount | CI/CD ServiceAccount | Runtime ServiceAccount |
 |--------|----------------------|---------------------|------------------------|
 | **Rechte** | Keine (sicherste Option) | Hoch (cluster-weit) | Minimal (namespace-scoped) |
 | **Lebensdauer** | Lang (dauerhaft laufend) | Kurz (nur während Deployment) | Lang (dauerhaft laufend) |
-| **Risiko bei Kompromittierung** | Sehr niedrig (keine Rechte) | Mittel (nur während Deployment) | Mittel-Hoch (dauerhaft aktiv) |
+| **Risiko bei Kompromittierung** | Sehr niedrig | Mittel | Mittel-Hoch |
 | **Verwendung** | Laufende Pods (Standard) | GitHub Actions / CI/CD | Laufende Pods (nur wenn Rechte benötigt) |
 | **Empfohlen** | ✅ **Erste Wahl** | ✅ Für CI/CD OK | ⚠️ Nur wenn Rechte benötigt |
 
-## Troubleshooting
-
-### PVC bleibt im Status "Pending"
-
-1. Prüfe, ob StorageClass existiert:
-   ```bash
-   kubectl get storageclass local-path
-   ```
-
-2. Prüfe, ob RBAC korrekt konfiguriert ist:
-   ```bash
-   kubectl get rolebinding longhorn-storage-reader -n <your-namespace>
-   ```
-
-3. Prüfe Provisioner-Logs:
-   ```bash
-   kubectl logs -n kube-system -l app=local-path-provisioner
-   ```
-
-### ImagePullBackOff
-
-1. Prüfe, ob Image in ACR vorhanden ist
-2. Prüfe ServiceAccount ImagePullSecrets:
-   ```bash
-   kubectl get serviceaccount <sa-name> -n <namespace> -o yaml
-   ```
+---
 
 ## Weitere Ressourcen
 
 - [Kubernetes RBAC Documentation](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
 - [Helm Documentation](https://helm.sh/docs/)
-- [Local Path Provisioner](https://github.com/rancher/local-path-provisioner)
+- [Longhorn Documentation](https://longhorn.io/docs/)
+- [NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)
+- [Prometheus Stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+
+---
 
 ## Support
 
@@ -842,4 +550,3 @@ Bei Fragen oder Problemen:
 1. Prüfe diese Dokumentation
 2. Prüfe Cluster-Logs
 3. Kontaktiere das Infrastructure-Team
-

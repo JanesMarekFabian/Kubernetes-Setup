@@ -1,0 +1,206 @@
+name: Deploy Longhorn Storage
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'longhorn/**'
+      - '.github/workflows/longhorn-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror Longhorn images
+        run: |
+          set -euo pipefail
+          ACR_REGISTRY="${ACR_REGISTRY}"
+          
+          # Longhorn images to mirror
+          LONGHORN_IMAGES=(
+            "docker.io/longhornio/longhorn-manager:v1.7.0"
+            "docker.io/longhornio/longhorn-engine:v1.7.0"
+            "docker.io/longhornio/longhorn-ui:v1.7.0"
+            "docker.io/longhornio/longhorn-instance-manager:v1.7.0"
+            "docker.io/longhornio/longhorn-share-manager:v1.7.0"
+            "docker.io/longhornio/longhorn-backing-image-manager:v1.7.0"
+          )
+          
+          for SOURCE_IMAGE in "${LONGHORN_IMAGES[@]}"; do
+            # Extract repo and tag
+            REPO_TAG=$(echo "$SOURCE_IMAGE" | sed 's|docker.io/||')
+            REPO=$(echo "$REPO_TAG" | cut -d':' -f1)
+            TAG=$(echo "$REPO_TAG" | cut -d':' -f2)
+            TARGET_IMAGE="${ACR_REGISTRY}/${REPO}:${TAG}"
+            
+            echo "→ Mirroring $SOURCE_IMAGE to $TARGET_IMAGE"
+            docker pull "$SOURCE_IMAGE"
+            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+            docker push "$TARGET_IMAGE"
+          done
+
+  deploy:
+    name: Deploy Longhorn Storage
+    needs: mirror
+    runs-on: self-hosted
+    env:
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Setup Helm
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm version || (curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+
+      - name: Prepare namespace and pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get ns longhorn-system >/dev/null 2>&1 || kubectl create namespace longhorn-system
+          kubectl create secret docker-registry acr-pull \
+            --docker-server="${ACR_REGISTRY}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            -n longhorn-system \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add Longhorn Helm Repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add longhorn https://charts.longhorn.io
+          helm repo update
+
+      - name: Deploy Longhorn
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Deploying Longhorn..."
+          
+          # Install Longhorn with ACR images
+          helm upgrade --install longhorn longhorn/longhorn \
+            --namespace longhorn-system \
+            --create-namespace \
+            --values longhorn/values.yaml \
+            --set longhorn.image.longhorn.repository="${ACR_REGISTRY}/longhornio/longhorn-manager" \
+            --set longhorn.image.longhorn.tag="v1.7.0" \
+            --set longhorn.image.engine.repository="${ACR_REGISTRY}/longhornio/longhorn-engine" \
+            --set longhorn.image.engine.tag="v1.7.0" \
+            --set longhorn.image.ui.repository="${ACR_REGISTRY}/longhornio/longhorn-ui" \
+            --set longhorn.image.ui.tag="v1.7.0" \
+            --set longhorn.image.instanceManager.repository="${ACR_REGISTRY}/longhornio/longhorn-instance-manager" \
+            --set longhorn.image.instanceManager.tag="v1.7.0" \
+            --set longhorn.image.shareManager.repository="${ACR_REGISTRY}/longhornio/longhorn-share-manager" \
+            --set longhorn.image.shareManager.tag="v1.7.0" \
+            --set longhorn.image.backingImageManager.repository="${ACR_REGISTRY}/longhornio/longhorn-backing-image-manager" \
+            --set longhorn.image.backingImageManager.tag="v1.7.0" \
+            --wait --timeout=15m
+          
+          echo "✅ Longhorn deployed"
+          
+          # Patch all Longhorn ServiceAccounts with ACR pull secret
+          echo "🔐 Patching Longhorn ServiceAccounts with ACR pull secret..."
+          for sa in $(kubectl get serviceaccounts -n longhorn-system -o name); do
+            kubectl patch "$sa" -n longhorn-system \
+              --type=json -p='[{"op": "add", "path": "/imagePullSecrets/-", "value": {"name": "acr-pull"}}]' 2>/dev/null || \
+            kubectl patch "$sa" -n longhorn-system \
+              -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' 2>/dev/null || true
+          done
+          
+          echo "✅ ServiceAccounts patched"
+
+      - name: Deploy Cluster Storage Configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📦 Deploying cluster storage configuration via Helm..."
+          
+          # Deploy cluster-storage Helm chart (minimal config for Longhorn)
+          helm upgrade --install cluster-storage ./infra/charts/cluster-storage \
+            --namespace kube-system \
+            --create-namespace \
+            --wait --timeout=2m
+          
+          echo "✅ Cluster storage configuration deployed successfully"
+
+      - name: Verify Longhorn StorageClass
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔍 Verifying Longhorn StorageClass..."
+          
+          # Wait for Longhorn StorageClass to be created
+          for i in {1..30}; do
+            if kubectl get storageclass longhorn >/dev/null 2>&1; then
+              echo "✅ Longhorn StorageClass found"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "⚠️ Longhorn StorageClass not found after 5 minutes"
+              kubectl get storageclass
+              exit 1
+            fi
+            sleep 10
+          done
+          
+          # Set as default if not already
+          if ! kubectl get storageclass longhorn -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' | grep -q "true"; then
+            echo "📝 Setting StorageClass longhorn as default..."
+            kubectl patch storageclass longhorn \
+              -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || echo "⚠️ Failed to patch StorageClass"
+          else
+            echo "✅ StorageClass longhorn is already set as default"
+          fi
+          
+          # Show StorageClass details
+          kubectl get storageclass longhorn -o yaml
+
+      - name: Verify Longhorn Pods
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "🔍 Verifying Longhorn pods..."
+          
+          # Wait for Longhorn pods to be ready
+          kubectl wait --for=condition=ready pod -l app=longhorn-manager -n longhorn-system --timeout=10m || {
+            echo "⚠️ Some Longhorn pods not ready, showing status..."
+            kubectl get pods -n longhorn-system
+          }
+          
+          echo "✅ Longhorn pods are ready"
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Longhorn Deployment Summary:"
+          kubectl get pods -n longhorn-system
+          kubectl get storageclass
+          echo ""
+          echo "✅ Longhorn deployment completed successfully!"
+

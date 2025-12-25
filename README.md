@@ -21,32 +21,33 @@ All container images are automatically mirrored to Azure Container Registry (ACR
 │   ├── actions/
 │   │   └── setup-cicd/          # GitHub Action for CI/CD cluster access setup
 │   └── workflows/
-│       └── build-push.yml        # Main CI/CD workflow
+│       ├── longhorn-deploy.yml      # Longhorn Storage Deployment
+│       ├── metrics-server-deploy.yml # Metrics Server Deployment
+│       ├── ingress-deploy.yml       # NGINX Ingress Deployment
+│       └── monitoring-deploy.yml    # Monitoring Stack Deployment
+├── longhorn/                    # Storage-Komponente
+│   ├── values.yaml
+│   └── README.md
+├── metrics-server/              # Metrics-Komponente
+│   └── README.md
+├── ingress/                    # NGINX Ingress Controller
+│   ├── values.yaml
+│   └── README.md
+├── monitoring/                 # Prometheus/Grafana Stack
+│   ├── values.yaml
+│   ├── scripts/
+│   │   └── generate_images.py
+│   └── README.md
 ├── infra/
-│   ├── addons/
-│   │   └── values/              # Helm values files
-│   │       ├── ingress-nginx.yaml
-│   │       └── observability.yaml
 │   ├── charts/
 │   │   └── cluster-storage/     # Helm chart for centralized storage config
-│   │       ├── Chart.yaml
-│   │       ├── values.yaml
-│   │       └── templates/
-│   │           ├── configmap.yaml      # Storage ConfigMap
-│   │           ├── clusterrole.yaml    # RBAC for projects
-│   │           ├── storageclass.yaml  # StorageClass definition
-│   │           └── _helpers.tpl
-│   ├── cluster/
-│   │   └── infra-repo-configurations.yaml  # DEPRECATED (migrated to Helm)
 │   ├── rbac/
 │   │   └── cicd-serviceaccount.yaml  # RBAC for CI/CD ServiceAccount
 │   └── templates/               # Templates for projects
 │       ├── project-storage-rbac.yaml
 │       └── project-storage-rbac-helm.yaml
-├── docs/
-│   └── PROJECT_STANDARDS.md     # Standards for other projects
-└── scripts/
-    └── generate_addon_artifacts.py   # Script to generate image mapping and ACR values
+└── docs/
+    └── PROJECT_STANDARDS.md     # Standards for other projects
 ```
 
 ## Prerequisites
@@ -67,13 +68,12 @@ All container images are automatically mirrored to Azure Container Registry (ACR
 - Mirrors all container images to ACR
 - Extracts additional images from Helm chart defaults using `helm template`
 
-### 2. Infrastructure Deployment
-The workflow deploys components in order:
-1. **Local Path Provisioner** - Storage provisioner
-2. **Cluster Storage Configuration** - Centralized ConfigMap via Helm Chart
-3. **Metrics Server** - Resource metrics
-4. **NGINX Ingress Controller** - Ingress traffic
-5. **Monitoring Stack** - Prometheus, Grafana, Alertmanager
+### 2. Component-Based Deployment
+Each component has its own workflow and can be deployed independently:
+1. **Longhorn Storage** - Enterprise-grade distributed storage
+2. **Metrics Server** - Resource metrics (kubectl top, HPA)
+3. **NGINX Ingress Controller** - Ingress traffic management
+4. **Monitoring Stack** - Prometheus, Grafana, Alertmanager
 
 ### 3. Image Registry Handling
 - All images are rewritten to use ACR registry
@@ -88,60 +88,48 @@ The workflow deploys components in order:
 ## Usage
 
 ### Automatic Deployment (CI/CD)
-The workflow triggers automatically on:
-- Push to `main` branch when files in `infra/addons/**`, `infra/rbac/**`, `infra/charts/**`, or `.github/workflows/build-push.yml` change
+Each component workflow triggers automatically on:
+- Push to `main` branch when files in the respective component directory change (e.g., `longhorn/**`, `monitoring/**`)
 - Manual trigger via `workflow_dispatch`
 
 ### Manual Deployment
-For local testing or manual deployment:
-
-1. Set environment variables:
-```bash
-export ACR_REGISTRY="myregistry.azurecr.io"
-export ACR_USERNAME="myusername"
-export ACR_PASSWORD="mypassword"
-```
-
-2. Generate artifacts:
-```bash
-python3 scripts/generate_addon_artifacts.py
-```
-
-3. Deploy using Helm (see individual component sections below)
+Each component can be deployed manually. See the respective component README files:
+- `longhorn/README.md` - Longhorn Storage
+- `metrics-server/README.md` - Metrics Server
+- `ingress/README.md` - NGINX Ingress Controller
+- `monitoring/README.md` - Monitoring Stack
 
 ## Components
 
+### Longhorn Storage
+- **Namespace**: `longhorn-system`
+- **StorageClass**: `longhorn` (default)
+- **Features**: Replication, Snapshots, Backups, Web UI
+- **Workflow**: `.github/workflows/longhorn-deploy.yml`
+- **Configuration**: `longhorn/values.yaml`
+- **Documentation**: `longhorn/README.md`
+
+### Monitoring Stack
+- **Namespace**: `monitoring`
+- **Components**: Prometheus, Grafana, Alertmanager, Node Exporter, Kube State Metrics
+- **Ports**: Grafana (30000), Prometheus (30001), Alertmanager (30002)
+- **Workflow**: `.github/workflows/monitoring-deploy.yml`
+- **Configuration**: `monitoring/values.yaml`
+- **Documentation**: `monitoring/README.md`
+
 ### NGINX Ingress Controller
 - **Namespace**: `ingress-nginx`
-- **Service Type**: LoadBalancer
-- **Values**: `infra/addons/values/ingress-nginx.yaml`
-
-### Prometheus Stack
-- **Namespace**: `monitoring`
-- **Components**:
-  - Prometheus (NodePort 30001)
-  - Grafana (NodePort 30000, default credentials: admin/admin)
-  - Alertmanager (NodePort 30002)
-- **Values**: `infra/addons/values/observability.yaml` → `observability.acr.yaml` (generated)
+- **Service Type**: NodePort (HTTP: 80, HTTPS: 443)
+- **Ingress Class**: `nginx`
+- **Workflow**: `.github/workflows/ingress-deploy.yml`
+- **Configuration**: `ingress/values.yaml`
+- **Documentation**: `ingress/README.md`
 
 ### Metrics Server
 - **Namespace**: `kube-system`
-- Enables `kubectl top` and HorizontalPodAutoscaler
-
-### Longhorn Storage
-- **Namespace**: `longhorn-system`
-- Provides enterprise-grade distributed storage via StorageClass `longhorn`
-- **Features**:
-  - Replication between nodes (HA)
-  - Snapshots and backups
-  - Volume cloning
-  - Web UI for management
-- **StorageClass**: `longhorn` (default storage class)
-
-### Cluster Storage Configuration
-- **Helm Chart**: `infra/charts/cluster-storage`
-- **Purpose**: Centralized management of storage configuration
-- **Note**: Longhorn creates its own StorageClass, this chart provides minimal configuration
+- **Function**: Enables `kubectl top` and HorizontalPodAutoscaler
+- **Workflow**: `.github/workflows/metrics-server-deploy.yml`
+- **Documentation**: `metrics-server/README.md`
 
 ## Accessing Dashboards
 
@@ -162,7 +150,7 @@ If you're deploying a project to this cluster, see **[PROJECT_STANDARDS.md](docs
 Quick start for projects:
 1. Create namespace and ServiceAccount
 2. Add RBAC for storage access (see `infra/templates/project-storage-rbac.yaml`)
-3. Use `storageClassName: local-path` in PVCs
+3. Use `storageClassName: longhorn` in PVCs
 
 ## Troubleshooting
 
@@ -186,22 +174,22 @@ If PVCs remain in "Pending" state:
 1. Check StorageClass exists: `kubectl get storageclass longhorn`
 2. Verify Longhorn pods: `kubectl get pods -n longhorn-system`
 3. Check Longhorn manager logs: `kubectl logs -n longhorn-system -l app=longhorn-manager`
+4. Verify RBAC: `kubectl get rolebinding longhorn-storage-reader -n <your-namespace>`
 
 ## Development
 
 ### Adding New Images
-1. Add image configuration to values files (`observability.yaml` or `ingress-nginx.yaml`)
-2. The Python script will automatically detect and add to `image-map.txt`
+1. Add image configuration to component values files (e.g., `monitoring/values.yaml`)
+2. Component-specific scripts will automatically detect and add to `image-map.txt`
 3. Workflow will mirror images to ACR
 
-### Modifying Values
-- Edit values files in `infra/addons/values/`
-- Changes trigger automatic deployment on push to `main`
+### Modifying Component Values
+- Edit values files in component directories (e.g., `longhorn/values.yaml`, `monitoring/values.yaml`)
+- Changes trigger automatic deployment for that specific component on push to `main`
 
 ### Modifying Storage Configuration
 - Edit `infra/charts/cluster-storage/values.yaml`
 - Changes trigger automatic deployment on push to `main`
-- Provisioner will be restarted automatically to pick up changes
 
 ## License
 
