@@ -14,6 +14,6 @@ controller:
     patch:
       image:
         repository: registry.k8s.io/ingress-nginx/kube-webhook-certgen
-        tag: "v20240424-helm-chart-5.1.0"
+        tag: "v1.4.1"
         # registry will be set via --set in workflow
 

@@ -34,7 +34,7 @@ jobs:
           # NGINX Ingress images to mirror
           INGRESS_IMAGES=(
             "registry.k8s.io/ingress-nginx/controller:v1.11.1"
-            "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v20240424-helm-chart-5.1.0"
+            "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.1"
           )
           
           for SOURCE_IMAGE in "${INGRESS_IMAGES[@]}"; do
@@ -113,7 +113,7 @@ jobs:
             --set controller.image.repository="${ACR_REGISTRY}/ingress-nginx/controller" \
             --set controller.image.tag="v1.11.1" \
             --set controller.admissionWebhooks.patch.image.repository="${ACR_REGISTRY}/ingress-nginx/kube-webhook-certgen" \
-            --set controller.admissionWebhooks.patch.image.tag="v20240424-helm-chart-5.1.0" \
+            --set controller.admissionWebhooks.patch.image.tag="v1.4.1" \
             --wait --timeout=5m
           
           # Patch ServiceAccounts with ACR pull secret
