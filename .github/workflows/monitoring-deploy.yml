@@ -7,6 +7,7 @@ on:
       - 'monitoring/**'
       - '.github/workflows/monitoring-deploy.yml'
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   mirror:

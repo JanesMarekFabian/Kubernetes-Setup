@@ -7,6 +7,7 @@ on:
       - 'longhorn/**'
       - '.github/workflows/longhorn-deploy.yml'
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   mirror:
@@ -38,7 +39,8 @@ jobs:
             "docker.io/longhornio/longhorn-ui:v1.7.0"
             "docker.io/longhornio/longhorn-instance-manager:v1.7.0"
             "docker.io/longhornio/longhorn-share-manager:v1.7.0"
-            "docker.io/longhornio/longhorn-backing-image-manager:v1.7.0"
+            # backing-image-manager is optional and may not exist as separate image in v1.7.0
+            # It's managed by the Helm chart if needed
           )
           
           for SOURCE_IMAGE in "${LONGHORN_IMAGES[@]}"; do
@@ -117,8 +119,6 @@ jobs:
             --set longhorn.image.instanceManager.tag="v1.7.0" \
             --set longhorn.image.shareManager.repository="${ACR_REGISTRY}/longhornio/longhorn-share-manager" \
             --set longhorn.image.shareManager.tag="v1.7.0" \
-            --set longhorn.image.backingImageManager.repository="${ACR_REGISTRY}/longhornio/longhorn-backing-image-manager" \
-            --set longhorn.image.backingImageManager.tag="v1.7.0" \
             --wait --timeout=15m
           
           echo "✅ Longhorn deployed"

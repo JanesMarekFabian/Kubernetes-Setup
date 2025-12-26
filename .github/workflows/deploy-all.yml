@@ -1,0 +1,97 @@
+name: Deploy All Infrastructure Components
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/deploy-all.yml'
+      - 'longhorn/**'
+      - 'metrics-server/**'
+      - 'ingress/**'
+      - 'monitoring/**'
+  workflow_dispatch:
+
+jobs:
+  deploy-longhorn:
+    name: Deploy Longhorn Storage
+    uses: ./.github/workflows/longhorn-deploy.yml
+
+  deploy-metrics-server:
+    name: Deploy Metrics Server
+    needs: deploy-longhorn
+    uses: ./.github/workflows/metrics-server-deploy.yml
+
+  deploy-ingress:
+    name: Deploy NGINX Ingress
+    needs: deploy-metrics-server
+    uses: ./.github/workflows/ingress-deploy.yml
+
+  deploy-monitoring:
+    name: Deploy Monitoring Stack
+    needs: deploy-ingress
+    uses: ./.github/workflows/monitoring-deploy.yml
+
+  summary:
+    name: Deployment Summary
+    needs: [deploy-longhorn, deploy-metrics-server, deploy-ingress, deploy-monitoring]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup CICD access
+        uses: ./.github/actions/setup-cicd
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - name: Deployment Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "📊 Infrastructure Deployment Summary"
+          echo "===================================="
+          echo ""
+          
+          echo "🔍 Longhorn Storage:"
+          if kubectl get pods -n longhorn-system >/dev/null 2>&1; then
+            kubectl get pods -n longhorn-system
+            echo "✅ Longhorn deployed"
+          else
+            echo "⚠️ Longhorn not found"
+          fi
+          echo ""
+          
+          echo "🔍 Metrics Server:"
+          if kubectl get pods -n kube-system -l k8s-app=metrics-server >/dev/null 2>&1; then
+            kubectl get pods -n kube-system -l k8s-app=metrics-server
+            echo "✅ Metrics Server deployed"
+          else
+            echo "⚠️ Metrics Server not found"
+          fi
+          echo ""
+          
+          echo "🔍 NGINX Ingress:"
+          if kubectl get pods -n ingress-nginx >/dev/null 2>&1; then
+            kubectl get pods -n ingress-nginx
+            echo "✅ NGINX Ingress deployed"
+          else
+            echo "⚠️ NGINX Ingress not found"
+          fi
+          echo ""
+          
+          echo "🔍 Monitoring Stack:"
+          if kubectl get pods -n monitoring >/dev/null 2>&1; then
+            kubectl get pods -n monitoring
+            echo "✅ Monitoring Stack deployed"
+          else
+            echo "⚠️ Monitoring Stack not found"
+          fi
+          echo ""
+          
+          echo "📦 StorageClasses:"
+          kubectl get storageclass
+          echo ""
+          
+          echo "✅ All infrastructure components deployment completed!"
+
